@@ -6,7 +6,7 @@ credentials, session state, and encryption keys.
 
 ## Installation
 
-Install `n8n-nodes-matrix-e2ee` using the
+Install `@spindle-studio/n8n-nodes-matrix-e2ee` using the
 [n8n community-node installation guide](https://docs.n8n.io/integrations/community-nodes/installation/).
 The gateway must be running and reachable from n8n before configuring the node.
 

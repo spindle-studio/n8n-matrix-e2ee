@@ -1,5 +1,5 @@
 {
-	"node": "n8n-nodes-matrix-e2ee",
+	"node": "@spindle-studio/n8n-nodes-matrix-e2ee",
 	"nodeVersion": "1.0",
 	"codexVersion": "1.0",
 	"categories": ["Communication"],

@@ -79,7 +79,7 @@ it only on the local host.
 
 ### 3. Connect n8n
 
-Install `n8n-nodes-matrix-e2ee` from
+Install `@spindle-studio/n8n-nodes-matrix-e2ee` from
 **Settings > Community Nodes** in n8n. See the
 [n8n installation guide](https://docs.n8n.io/integrations/community-nodes/installation/)
 for other installation methods.

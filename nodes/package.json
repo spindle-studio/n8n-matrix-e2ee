@@ -1,5 +1,5 @@
 {
-  "name": "n8n-nodes-matrix-e2ee",
+  "name": "@spindle-studio/n8n-nodes-matrix-e2ee",
   "version": "0.1.0",
   "description": "n8n nodes for sending and receiving Matrix E2EE gateway messages",
   "license": "MIT",
