@@ -1,0 +1,8 @@
+target/
+node_modules/
+__pycache__/
+dist/
+.env
+.DS_Store
+data/
+synapse-data/

@@ -1,0 +1,29 @@
+name: Bug report
+description: Report a reproducible problem with the gateway or n8n node.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include passwords, API tokens, Matrix event content, session files,
+        encryption stores, or unredacted logs.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Use redacted or synthetic values.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include project version, n8n version, gateway image or commit, and Matrix client where relevant.
+    validations:
+      required: true

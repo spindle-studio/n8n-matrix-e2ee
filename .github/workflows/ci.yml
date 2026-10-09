@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test release configuration and version guards
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+
+  nodes:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nodes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: npm
+          cache-dependency-path: nodes/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  gateway:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --locked
+      - name: Build gateway container
+        run: docker build --tag n8n-matrix-e2ee-gateway:ci .

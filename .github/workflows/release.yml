@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      gateway_dev:
+        description: Build only a SHA-tagged gateway development image
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository_owner == 'spindle-studio' && github.ref == 'refs/heads/main' && !inputs.gateway_dev
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      nodes_created: ${{ steps.release.outputs['nodes--release_created'] }}
+      nodes_tag: ${{ steps.release.outputs['nodes--tag_name'] }}
+      gateway_created: ${{ steps.release.outputs['gateway--release_created'] }}
+      gateway_tag: ${{ steps.release.outputs['gateway--tag_name'] }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          # Use an app/PAT token to trigger CI on the generated release PRs.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          target-branch: main
+
+  publish-nodes:
+    needs: release
+    if: needs.release.outputs.nodes_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: nodes
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.nodes_tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: nodes/package-lock.json
+      - name: Validate node release version
+        id: version
+        working-directory: .
+        env:
+          RELEASE_TAG: ${{ needs.release.outputs.nodes_tag }}
+        run: python3 .github/scripts/release_version.py nodes "$RELEASE_TAG"
+      - run: npm ci
+      - name: Publish nodes with provenance
+        # prepublishOnly runs lint and build before uploading.
+        run: npm publish --provenance --access public --tag "$NPM_DIST_TAG"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_DIST_TAG: ${{ steps.version.outputs.npm_tag }}
+
+  publish-gateway:
+    needs: release
+    if: >-
+      !cancelled() && github.repository_owner == 'spindle-studio' &&
+      (needs.release.outputs.gateway_created == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs.gateway_dev))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.gateway_tag || github.sha }}
+      - name: Identify image source
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Validate gateway release version
+        if: needs.release.outputs.gateway_created == 'true'
+        id: version
+        env:
+          RELEASE_TAG: ${{ needs.release.outputs.gateway_tag }}
+        run: python3 .github/scripts/release_version.py gateway "$RELEASE_TAG"
+      - name: Test gateway
+        working-directory: gateway
+        run: cargo test --locked
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: metadata
+        with:
+          images: ghcr.io/spindle-studio/n8n-matrix-e2ee-gateway
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ steps.version.outputs.version }},enable=${{ needs.release.outputs.gateway_created == 'true' }}
+            type=raw,value=${{ steps.source.outputs.sha }}
+            type=raw,value=latest,enable=${{ needs.release.outputs.gateway_created == 'true' && steps.version.outputs.stable == 'true' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/spindle-studio/n8n-matrix-e2ee
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+            org.opencontainers.image.licenses=MIT
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: gateway
+          file: gateway/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
