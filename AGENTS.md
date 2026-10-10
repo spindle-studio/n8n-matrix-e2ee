@@ -156,8 +156,13 @@ this works even when tags created with `GITHUB_TOKEN` do not trigger workflows.
 
 Before uploading, each publisher validates the tag against its component's
 manifest and lockfile. Nodes run lint and build through `prepublishOnly` and
-publish with provenance. The gateway runs tests and builds AMD64 and ARM64
-images with Buildx and QEMU. The emulated ARM64 build can take longer.
+publish with provenance. The gateway runs tests and builds images in parallel on native AMD64 and ARM64
+runners. Each platform uses its own GitHub Actions BuildKit cache. A final job
+combines the image digests and publishes version/SHA/latest tags only after both
+builds succeed. The Dockerfile stays a plain two-stage build; source changes
+invalidate the Cargo build layer, so dependency compilation is not cached
+separately. Provenance attestations can appear as `unknown/unknown` entries in
+the image index; these are metadata, not additional runnable platforms.
 
 Stable npm releases use `latest`; prereleases use `next`. Stable gateway
 releases publish the version, full commit SHA, and `latest` image tags;

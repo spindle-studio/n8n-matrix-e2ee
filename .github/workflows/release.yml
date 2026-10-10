@@ -74,7 +74,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_DIST_TAG: ${{ steps.version.outputs.npm_tag }}
 
-  publish-gateway:
+  prepare-gateway:
     needs: release
     if: >-
       !cancelled() && github.repository_owner == 'spindle-studio' &&
@@ -83,7 +83,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      metadata: ${{ steps.metadata.outputs.json }}
+      labels: ${{ steps.metadata.outputs.labels }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -97,14 +100,6 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.release.outputs.gateway_tag }}
         run: python3 .github/scripts/release_version.py gateway "$RELEASE_TAG"
-      - name: Test gateway
-        working-directory: gateway
-        run: cargo test --locked
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/metadata-action@v5
         id: metadata
         with:
@@ -118,17 +113,93 @@ jobs:
             org.opencontainers.image.source=https://github.com/spindle-studio/n8n-matrix-e2ee
             org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
             org.opencontainers.image.licenses=MIT
-      - uses: docker/setup-qemu-action@v3
+
+  build-gateway:
+    needs: prepare-gateway
+    if: ${{ !cancelled() && needs.prepare-gateway.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
         with:
-          platforms: arm64
+          ref: ${{ needs.prepare-gateway.outputs.sha }}
+      - name: Test gateway
+        working-directory: gateway
+        run: cargo test --locked
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - name: Build and push platform image
+        id: build
+        uses: docker/build-push-action@v6
         with:
           context: gateway
           file: gateway/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          platforms: linux/${{ matrix.arch }}
+          labels: ${{ needs.prepare-gateway.outputs.labels }}
+          outputs: type=image,name=ghcr.io/spindle-studio/n8n-matrix-e2ee-gateway,push-by-digest=true,name-canonical=true,push=true
+          provenance: mode=min
+          cache-from: type=gha,scope=gateway-${{ matrix.arch }}
+          cache-to: type=gha,scope=gateway-${{ matrix.arch }},mode=max
+      - name: Export image digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gateway-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-gateway:
+    needs: [prepare-gateway, build-gateway]
+    if: ${{ !cancelled() && needs.prepare-gateway.result == 'success' && needs.build-gateway.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gateway-digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Publish multi-platform image tags
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          METADATA: ${{ needs.prepare-gateway.outputs.metadata }}
+          IMAGE: ghcr.io/spindle-studio/n8n-matrix-e2ee-gateway
+        run: |
+          mapfile -t tags < <(jq -r '.tags[]' <<< "$METADATA")
+          args=()
+          for tag in "${tags[@]}"; do
+            args+=(--tag "$tag")
+          done
+          digests=(*)
+          test "${#digests[@]}" -eq 2
+          for digest in "${digests[@]}"; do
+            args+=("$IMAGE@sha256:$digest")
+          done
+          docker buildx imagetools create "${args[@]}"
+          docker buildx imagetools inspect "${tags[0]}"
