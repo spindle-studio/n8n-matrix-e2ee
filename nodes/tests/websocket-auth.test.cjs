@@ -110,3 +110,41 @@ test('reconnect authenticates again and shutdown cancels reconnect', async (t) =
 	await delay(1100);
 	assert.equal(Socket.instances.length, 2);
 });
+
+
+test('mentions are optional and preserved for text, image, and audio events', async (t) => {
+	const { socket, emitted } = await start(t);
+	socket.open();
+	socket.message({ type: 'authenticated' });
+	for (const message_type of ['text', 'image', 'audio']) {
+		for (const mentions of [undefined, { user_ids: [], room: false },
+			{ user_ids: ['@ben:example.org'], room: false },
+			{ user_ids: [], room: true },
+			{ user_ids: ['@ben:example.org'], room: true }]) {
+			socket.message({ ...roomEvent, message_type, ...(mentions === undefined ? {} : { mentions }), future_field: true });
+			await delay(0);
+			const output = emitted.at(-1)[0][0].json;
+			assert.equal(output.message_type, message_type);
+			assert.deepEqual(output.mentions, mentions);
+			assert.equal(Object.hasOwn(output, 'mentions'), mentions !== undefined);
+			assert.equal(Object.hasOwn(output, 'future_field'), false);
+		}
+	}
+	assert.equal(emitted.length, 15);
+});
+
+test('invalid mention metadata is rejected without breaking subsequent events', async (t) => {
+	const { socket, emitted } = await start(t);
+	socket.open();
+	socket.message({ type: 'authenticated' });
+	for (const mentions of [null, [], 'invalid', {}, { user_ids: [], room: 'true' },
+		{ user_ids: '@ben:example.org', room: false }, { user_ids: [1], room: false },
+		{ user_ids: [' '], room: false }]) {
+		socket.message({ ...roomEvent, mentions });
+	}
+	await delay(0);
+	assert.equal(emitted.length, 0);
+	socket.message(roomEvent);
+	await delay(0);
+	assert.equal(emitted.length, 1);
+});
