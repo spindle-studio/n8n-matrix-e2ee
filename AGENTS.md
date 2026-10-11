@@ -126,15 +126,35 @@ gateway filters events from its configured Matrix user. It automatically
 accepts invitations only from `ALLOWED_INVITERS` and reconciles allowed
 invitations pending at startup.
 
+## Branch naming
+
+Use a standard purpose-based prefix and a short lowercase, hyphen-separated
+description: `<prefix>/<description>`. Follow an explicitly requested branch name.
+
+Preferred prefixes:
+
+- `feat/`: new features, for example `feat/websocket-authentication`.
+- `fix/`: bug fixes, for example `fix/websocket-reconnect`.
+- `docs/`: documentation changes, for example `docs/gateway-quickstart`.
+- `refactor/`: code restructuring without changing behavior.
+- `test/`: test additions or improvements.
+- `ci/`: CI and release workflow changes, for example `ci/npm-staged-publishing`.
+- `build/`: build tooling, packaging, or dependency changes.
+- `chore/`: maintenance that does not fit another category.
+
+Keep `main` as the default branch. Leave release-please's generated branch names
+unchanged; do not create manual release branches for its releases.
+
 ## Independent releases with release-please
 
 Both components use the same process: merge changes, review the component's
-release PR, then merge that PR to publish. Do not bump versions or push release
+release PR, then merge that PR. Gateway images publish automatically; npm
+packages are staged for maintainer approval. Do not bump versions or push release
 tags manually, and do not use `n8n-node release`.
 
 | Component | Version source | Release tag | Publication |
 | --- | --- | --- | --- |
-| Nodes | `nodes/package.json` | `nodes-v<version>` | npm with provenance |
+| Nodes | `nodes/package.json` | `nodes-v<version>` | npm staging with provenance, then maintainer approval |
 | Gateway | `gateway/Cargo.toml` | `gateway-v<version>` | GHCR, Linux AMD64 and ARM64 |
 
 `release-please-config.json` defines independent `node` and `rust` strategies
@@ -171,8 +191,10 @@ start a release; the first release needs a releasable commit in the new path.
    [release-please's token guidance](https://github.com/googleapis/release-please-action#other-actions-on-release-please-prs).
 3. Configure npm trusted publishing for owner `spindle-studio`, repository
    `n8n-matrix-e2ee`, and workflow **`release.yml`**. Update an existing trusted
-   publisher that points to `publish.yml`. Alternatively, set a scoped
-   `NPM_TOKEN` secret. Gateway publishing does not depend on npm setup.
+   publisher that points to `publish.yml`. Leave the environment name blank
+   and **Allow npm publish** unchecked: the job uses stage-only OIDC trusted
+   publishing and does not use `NPM_TOKEN`. Gateway publishing does not depend
+   on npm setup. Revoke the bootstrap npm token after validating trusted staging.
 4. Allow GitHub Packages publishing. The gateway uses `GITHUB_TOKEN` with
    `packages: write`; after its first publication, set the package visibility
    to **Public** so operators can pull without signing in.
@@ -187,14 +209,21 @@ workflow, using the component-specific outputs and checking out the exact tag;
 this works even when tags created with `GITHUB_TOKEN` do not trigger workflows.
 
 Before uploading, each publisher validates the tag against its component's
-manifest and lockfile. Nodes run lint and build through `prepublishOnly` and
-publish with provenance. The gateway runs tests and builds images in parallel on native AMD64 and ARM64
+manifest and lockfile. Nodes explicitly run lint, build, and tests, then use
+`npm stage publish` with provenance and npm 11.21.0. The gateway runs tests and builds images in parallel on native AMD64 and ARM64
 runners. Each platform uses its own GitHub Actions BuildKit cache. A final job
 combines the image digests and publishes version/SHA/latest tags only after both
 builds succeed. The Dockerfile stays a plain two-stage build; source changes
 invalidate the Cargo build layer, so dependency compilation is not cached
 separately. Provenance attestations can appear as `unknown/unknown` entries in
 the image index; these are metadata, not additional runnable platforms.
+
+After the nodes job succeeds, review the staged package on npmjs.com under
+**Staged Packages** and approve it with 2FA. Until approval, the GitHub release
+and tag exist but the new package version is not installable from npm. Verify
+its version, contents, and provenance before approval. Do not rerun a successful
+staging job to approve it: staged versions already reserve their version number.
+See [npm staged publishing](https://docs.npmjs.com/staged-publishing/).
 
 Stable npm releases use `latest`; prereleases use `next`. Stable gateway
 releases publish the version, full commit SHA, and `latest` image tags;

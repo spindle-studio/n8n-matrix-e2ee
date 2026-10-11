@@ -41,6 +41,7 @@ jobs:
           target-branch: main
 
   publish-nodes:
+    name: Stage nodes for npm approval
     needs: release
     if: needs.release.outputs.nodes_created == 'true'
     runs-on: ubuntu-latest
@@ -60,6 +61,8 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: npm
           cache-dependency-path: nodes/package-lock.json
+      - name: Install npm with staged publishing support
+        run: npm install --global npm@11.21.0
       - name: Validate node release version
         id: version
         working-directory: .
@@ -67,11 +70,11 @@ jobs:
           RELEASE_TAG: ${{ needs.release.outputs.nodes_tag }}
         run: python3 .github/scripts/release_version.py nodes "$RELEASE_TAG"
       - run: npm ci
-      - name: Publish nodes with provenance
-        # prepublishOnly runs lint and build before uploading.
-        run: npm publish --provenance --access public --tag "$NPM_DIST_TAG"
+      - name: Validate and build nodes
+        run: npm run lint && npm run build && npm test
+      - name: Stage nodes with provenance
+        run: npm stage publish --provenance --access public --tag "$NPM_DIST_TAG"
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_DIST_TAG: ${{ steps.version.outputs.npm_tag }}
 
   prepare-gateway:
