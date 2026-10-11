@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/spindle-studio/n8n-matrix-e2ee/compare/gateway-v0.1.0...gateway-v0.2.0) (2026-10-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **gateway:** authenticate native WebSocket clients with an initial message
+
+### Features
+
+* **gateway:** authenticate native WebSocket clients with an initial message ([5cfd755](https://github.com/spindle-studio/n8n-matrix-e2ee/commit/5cfd755640aac2f35e0486a0fae3d5d8f9ca2ab9))
+
 ## 0.1.0 (2026-10-10)
 
 
