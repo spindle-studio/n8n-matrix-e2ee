@@ -12,7 +12,7 @@ developer workflows, API contracts, and troubleshooting here.
 
 ## Local development
 
-Requirements: Rust, Node.js/npm, and Docker. Copy `gateway/.env.example` to
+Requirements: Rust, Node.js 22.4 or later/npm, and Docker or Podman. Copy `gateway/.env.example` to
 `.env` and configure a real Matrix bot account, homeserver, API token, and
 allowed inviters. Never commit `.env`, Matrix session files, encryption stores,
 or real credentials.
@@ -42,7 +42,29 @@ cd nodes
 npm ci
 npm run lint
 npm run build
+npm test
 ```
+
+Start the local n8n editor with the package linked and watched for changes:
+
+```sh
+cd nodes
+N8N_SECURE_COOKIE=false npm run dev
+```
+
+Open `http://localhost:5678`. Disabling secure cookies is for local HTTP
+development only and allows Safari to sign in; retain secure cookies for HTTPS
+deployments. Configure the gateway credential with the host-published gateway
+URL and `API_SECRET_TOKEN`. For example, publishing `127.0.0.1:8081:8080`
+makes the URL `http://127.0.0.1:8081` for n8n running on the host. Docker
+commands above also work with `podman` in place of `docker`.
+
+Click **Listen for test event** on the trigger before sending a Matrix message.
+The stream delivers new events only and does not replay messages received before
+subscription. Use a separate test bot account, room, API token, and persistent
+volume to isolate development from production. Never run concurrent gateways
+using the same or copied Matrix session and encryption store. Separate devices
+on the same account may both trigger workflows for the same message.
 
 The package has further n8n-specific rules in
 [`nodes/AGENTS.md`](nodes/AGENTS.md).
@@ -70,7 +92,8 @@ all later restarts should retain the same volume.
 
 ## Gateway API
 
-All `/v1` routes except `/healthz` require `Authorization: Bearer <API_SECRET_TOKEN>`.
+HTTP `/v1` routes require `Authorization: Bearer <API_SECRET_TOKEN>`.
+`GET /v1/ws` instead authenticates with the first WebSocket application message.
 The API is intentionally private: expose it only to trusted n8n workloads.
 
 | Route | Behavior |
@@ -83,6 +106,15 @@ The API is intentionally private: expose it only to trusted n8n workloads.
 | `POST /v1/typing` | Sets `{"room_id":"...","typing":true|false}` |
 | `GET /v1/media` | Downloads supported media by room and event ID |
 | `GET /v1/ws` | Streams validated `room.message` events over WebSocket |
+
+WebSocket clients must send `{"type":"authenticate","token":"<API_SECRET_TOKEN>"}`
+within five seconds. The gateway replies `{"type":"authenticated"}` before
+streaming events. Invalid credentials, malformed authentication, and expired
+authentication deadlines close with code `4401`. Bearer headers do not authenticate
+WebSocket connections. Incoming frames/messages are limited to 4 KiB and at most
+64 connections may be awaiting authentication. Clients must wait for the success
+response and authenticate again after reconnecting. Use WSS outside trusted
+networks; never log authentication payloads. HTTP authentication is unchanged.
 
 The WebSocket stream provides text, image, and audio events. All include
 `room_id`, `sender`, `event_id`, `body`, and `message_type`; media events can
@@ -106,10 +138,10 @@ tags manually, and do not use `n8n-node release`.
 | Gateway | `gateway/Cargo.toml` | `gateway-v<version>` | GHCR, Linux AMD64 and ARM64 |
 
 `release-please-config.json` defines independent `node` and `rust` strategies
-with separate release PRs. `.release-please-manifest.json` starts empty (`{}`)
-because neither component has been released. Initial releases target `0.1.0`;
-do not seed the manifest with unreleased versions, which would be treated as
-previous releases. Release PRs update the component manifest,
+with separate release PRs. `.release-please-manifest.json` records published component versions. Before
+any publications it starts empty (`{}`). Initial releases target `0.1.0`; do not
+seed the manifest with unreleased versions, which would be treated as previous
+releases. Release PRs update the component manifest,
 lockfile, `CHANGELOG.md`, and release-please manifest together.
 
 Use Conventional Commits when merging changes into `main`, for example:
@@ -197,3 +229,19 @@ Release validation tests require Python 3.11+:
 ```sh
 python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 ```
+
+### Node verification status
+
+The package enables the unmodified `@n8n/node-cli` strict ESLint configuration
+and has no external runtime dependencies. The trigger uses Node's built-in
+WebSocket and the abortable `sleep` helper from `n8n-workflow`. Minimum supported
+versions are Node.js 22.4 and `n8n-workflow` 2.35.3 (the validated helper version).
+The strict rules accept the built-in WebSocket API. The published verification
+guidelines do not explicitly approve that transport, however: passing automated
+checks is not a guarantee of Creator Portal approval or Cloud runtime support.
+Do not describe the package as verified until n8n approves it.
+
+This protocol change requires a breaking gateway release (0.2.0 under the
+pre-1.0 policy) before publishing nodes 0.1.0. Release-please still owns version
+bumps. Do not merge the existing nodes release PR before this change and the
+compatible gateway release are available.

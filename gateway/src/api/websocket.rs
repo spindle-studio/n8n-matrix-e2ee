@@ -1,20 +1,28 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 
 use axum::{
     extract::{
         ConnectInfo, State,
-        ws::{Message, WebSocket, WebSocketUpgrade},
+        ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
     },
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use futures_util::SinkExt;
-use tokio::sync::broadcast;
+use serde::Deserialize;
+use tokio::{
+    sync::{Semaphore, broadcast},
+    time::timeout,
+};
 use tracing::{error, info, warn};
 
 use crate::gateway::AppState;
 
-use super::{GatewayEvent, auth::authorize_request};
+use super::GatewayEvent;
+
+const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CLIENT_MESSAGE_SIZE: usize = 4096;
+static PENDING_AUTH: Semaphore = Semaphore::const_new(64);
 
 pub(crate) async fn websocket(
     ws: WebSocketUpgrade,
@@ -23,13 +31,61 @@ pub(crate) async fn websocket(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let user_agent = request_user_agent(&headers);
-    if let Err(error) = authorize_request(&state.api_secret_token, &headers) {
-        warn!(remote_addr = %remote_addr, user_agent, "rejecting unauthorized WebSocket connection");
-        return error.into_response();
-    }
-    ws.on_upgrade(move |socket| {
-        forward_events(socket, state.events.subscribe(), remote_addr, user_agent)
+    let Ok(permit) = PENDING_AUTH.try_acquire() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    ws.max_message_size(MAX_CLIENT_MESSAGE_SIZE)
+        .max_frame_size(MAX_CLIENT_MESSAGE_SIZE)
+        .on_upgrade(move |mut socket| async move {
+            let authenticated =
+                authenticate(&mut socket, &state.api_secret_token, AUTH_TIMEOUT).await;
+            drop(permit);
+            if authenticated {
+                forward_events(socket, state.events.subscribe(), remote_addr, user_agent).await;
+            }
+        })
+        .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Authentication {
+    #[serde(rename = "type")]
+    kind: String,
+    token: String,
+}
+
+async fn authenticate(socket: &mut WebSocket, expected: &str, deadline: Duration) -> bool {
+    let result = timeout(deadline, async {
+        loop {
+            match socket.recv().await {
+                Some(Ok(Message::Text(payload))) => {
+                    return serde_json::from_str::<Authentication>(&payload)
+                        .is_ok_and(|auth| auth.kind == "authenticate" && auth.token == expected);
+                }
+                Some(Ok(Message::Ping(_))) => {
+                    if socket.flush().await.is_err() {
+                        return false;
+                    }
+                }
+                Some(Ok(Message::Pong(_))) => {}
+                _ => return false,
+            }
+        }
     })
+    .await;
+    if result != Ok(true) {
+        let _ = timeout(
+            Duration::from_secs(1),
+            socket.send(Message::Close(Some(CloseFrame {
+                code: 4401,
+                reason: "Authentication failed".into(),
+            }))),
+        )
+        .await;
+        return false;
+    }
+    true
 }
 
 fn request_user_agent(headers: &HeaderMap) -> String {
@@ -47,6 +103,18 @@ async fn forward_events(
     remote_addr: SocketAddr,
     user_agent: String,
 ) {
+    // The subscription already exists before acknowledging authentication, so
+    // an event arriving immediately after the acknowledgement is not missed.
+    if !matches!(
+        timeout(
+            Duration::from_secs(1),
+            socket.send(Message::Text(r#"{"type":"authenticated"}"#.into(),))
+        )
+        .await,
+        Ok(Ok(()))
+    ) {
+        return;
+    }
     info!(remote_addr = %remote_addr, user_agent, "WebSocket client connected to Matrix event stream");
     loop {
         tokio::select! {
@@ -122,16 +190,28 @@ mod tests {
             let app = Router::new().route(
                 "/ws",
                 get(move |ws: WebSocketUpgrade| {
-                    let receiver = sender.subscribe();
+                    let sender = sender.clone();
                     async move {
-                        ws.on_upgrade(move |socket| {
-                            forward_events(
-                                socket,
-                                receiver,
-                                "127.0.0.1:0".parse().unwrap(),
-                                "test".into(),
-                            )
-                        })
+                        ws.max_message_size(MAX_CLIENT_MESSAGE_SIZE)
+                            .max_frame_size(MAX_CLIENT_MESSAGE_SIZE)
+                            .on_upgrade(move |mut socket| async move {
+                                if !authenticate(
+                                    &mut socket,
+                                    "test-token",
+                                    Duration::from_millis(200),
+                                )
+                                .await
+                                {
+                                    return;
+                                }
+                                forward_events(
+                                    socket,
+                                    sender.subscribe(),
+                                    "127.0.0.1:0".parse().unwrap(),
+                                    "test".into(),
+                                )
+                                .await
+                            })
                     }
                 }),
             );
@@ -147,7 +227,7 @@ mod tests {
             }
         }
 
-        async fn connect(&self) -> ClientSocket {
+        async fn connect_raw(&self) -> ClientSocket {
             timeout(
                 Duration::from_secs(5),
                 connect_async(format!("ws://{}/ws", self.address)),
@@ -156,6 +236,21 @@ mod tests {
             .unwrap()
             .unwrap()
             .0
+        }
+
+        async fn connect(&self) -> ClientSocket {
+            let mut socket = self.connect_raw().await;
+            socket
+                .send(ClientMessage::Text(
+                    r#"{"type":"authenticate","token":"test-token"}"#.into(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                receive(&mut socket).await,
+                ClientMessage::Text(r#"{"type":"authenticated"}"#.into())
+            );
+            socket
         }
 
         async fn wait_for_subscribers(&self, count: usize) {
@@ -175,6 +270,71 @@ mod tests {
             .expect("timed out waiting for WebSocket frame")
             .unwrap()
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_clients_never_subscribe_and_time_out() {
+        let server = TestServer::start().await;
+        let mut socket = server.connect_raw().await;
+        assert_eq!(server.events.receiver_count(), 0);
+        assert!(
+            matches!(receive(&mut socket).await, ClientMessage::Close(Some(frame)) if frame.code == 4401.into())
+        );
+        assert_eq!(server.events.receiver_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn invalid_first_messages_are_rejected() {
+        let server = TestServer::start().await;
+        for payload in [
+            r#"{"type":"authenticate","token":"wrong"}"#,
+            r#"{"type":"hello"}"#,
+            "not json",
+        ] {
+            let mut socket = server.connect_raw().await;
+            socket
+                .send(ClientMessage::Text(payload.into()))
+                .await
+                .unwrap();
+            assert!(
+                matches!(receive(&mut socket).await, ClientMessage::Close(Some(frame)) if frame.code == 4401.into())
+            );
+            assert_eq!(server.events.receiver_count(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn bearer_header_alone_does_not_authenticate() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let server = TestServer::start().await;
+        let mut request = format!("ws://{}/ws", server.address)
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("Authorization", "Bearer test-token".parse().unwrap());
+        let (mut client, _) = connect_async(request).await.unwrap();
+        assert_eq!(server.events.receiver_count(), 0);
+        assert!(
+            matches!(receive(&mut client).await, ClientMessage::Close(Some(frame)) if frame.code == 4401.into())
+        );
+    }
+
+    #[tokio::test]
+    async fn binary_authentication_and_oversized_messages_never_subscribe() {
+        let server = TestServer::start().await;
+        for message in [
+            ClientMessage::Binary(vec![1, 2, 3].into()),
+            ClientMessage::Text("x".repeat(MAX_CLIENT_MESSAGE_SIZE + 1).into()),
+        ] {
+            let mut socket = server.connect_raw().await;
+            socket.send(message).await.unwrap();
+            // Oversize frames may close the transport rather than send a close frame.
+            let _ = timeout(Duration::from_secs(5), socket.next())
+                .await
+                .unwrap();
+            assert_eq!(server.events.receiver_count(), 0);
+        }
     }
 
     #[tokio::test]

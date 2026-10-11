@@ -22,14 +22,15 @@
     "dev": "n8n-node dev",
     "lint": "n8n-node lint",
     "lint:fix": "n8n-node lint --fix",
-    "prepublishOnly": "npm run lint && npm run build"
+    "prepublishOnly": "npm run lint && npm run build",
+    "test": "node --test tests/*.test.cjs"
   },
   "files": [
     "dist"
   ],
   "n8n": {
     "n8nNodesApiVersion": 1,
-    "strict": false,
+    "strict": true,
     "credentials": [
       "dist/credentials/MatrixE2eeApi.credentials.js"
     ],
@@ -40,7 +41,7 @@
   },
   "devDependencies": {
     "@n8n/node-cli": "*",
-    "@types/ws": "^8.18.1",
+    "@types/node": "^22.20.5",
     "eslint": "9.32.0",
     "prettier": "3.6.2",
     "typescript": "5.9.2"
@@ -48,7 +49,7 @@
   "peerDependencies": {
     "n8n-workflow": "*"
   },
-  "dependencies": {
-    "ws": "^8.21.3"
+  "engines": {
+    "node": ">=22.4.0"
   }
 }
