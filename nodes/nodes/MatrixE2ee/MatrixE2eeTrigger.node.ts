@@ -7,11 +7,11 @@ import type {
 	ITriggerFunctions,
 	ITriggerResponse,
 } from 'n8n-workflow';
-import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
-import WebSocket, { type RawData } from 'ws';
+import { NodeConnectionTypes, NodeOperationError, sleep } from 'n8n-workflow';
 
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
+const AUTH_TIMEOUT_MS = 10_000;
 
 type MatrixE2eeMessageType = 'text' | 'image' | 'audio';
 
@@ -33,7 +33,8 @@ interface MatrixE2eeEvent extends IDataObject {
 
 export function getGatewayWebSocketUrl(baseUrl: string): string {
 	const parsedUrl = new URL(baseUrl.trim());
-	const wsProtocol = parsedUrl.protocol === 'https:' ? 'wss:' : parsedUrl.protocol === 'http:' ? 'ws:' : '';
+	const wsProtocol =
+		parsedUrl.protocol === 'https:' ? 'wss:' : parsedUrl.protocol === 'http:' ? 'ws:' : '';
 	if (wsProtocol.length === 0) {
 		return '';
 	}
@@ -52,18 +53,6 @@ export function getGatewayMediaUrl(baseUrl: string): string {
 	parsedUrl.search = '';
 	parsedUrl.hash = '';
 	return parsedUrl.toString();
-}
-
-function rawDataToText(data: RawData): string {
-	if (Array.isArray(data)) {
-		return Buffer.concat(data).toString('utf8');
-	}
-
-	if (data instanceof ArrayBuffer) {
-		return Buffer.from(data).toString('utf8');
-	}
-
-	return data.toString('utf8');
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -168,21 +157,18 @@ async function downloadGatewayImage(
 ): Promise<IBinaryData> {
 	// Push-trigger callbacks run outside n8n's credential expression context.
 	// The token was resolved and validated during activation, so use it directly.
-	const responseData = await this.helpers.httpRequest.call(
-		this,
-		{
-			method: 'GET',
-			url: getGatewayMediaUrl(baseUrl),
-			headers: {
-				Authorization: `Bearer ${apiToken}`,
-			},
-			qs: {
-				room_id: event.room_id,
-				event_id: event.event_id,
-			},
-			encoding: 'arraybuffer',
+	const responseData = await this.helpers.httpRequest.call(this, {
+		method: 'GET',
+		url: getGatewayMediaUrl(baseUrl),
+		headers: {
+			Authorization: `Bearer ${apiToken}`,
 		},
-	);
+		qs: {
+			room_id: event.room_id,
+			event_id: event.event_id,
+		},
+		encoding: 'arraybuffer',
+	});
 	const buffer = normalizeBinaryResponse(responseData);
 
 	if (buffer === undefined) {
@@ -306,14 +292,26 @@ export class MatrixE2eeTrigger implements INodeType {
 			);
 		}
 
+		if (typeof WebSocket === 'undefined') {
+			throw new NodeOperationError(
+				this.getNode(),
+				'Node.js 22.4 or later with WebSocket support is required.',
+			);
+		}
+
 		let active = true;
 		let socket: WebSocket | undefined;
-		let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+		let reconnectTimer: AbortController | undefined;
 		let reconnectAttempts = 0;
+		let authTimer: AbortController | undefined;
+		const clearAuthTimer = (): void => {
+			authTimer?.abort();
+			authTimer = undefined;
+		};
 
 		const clearReconnectTimer = (): void => {
 			if (reconnectTimer !== undefined) {
-				clearTimeout(reconnectTimer);
+				reconnectTimer.abort();
 				reconnectTimer = undefined;
 			}
 		};
@@ -329,10 +327,17 @@ export class MatrixE2eeTrigger implements INodeType {
 			);
 			reconnectAttempts += 1;
 
-			reconnectTimer = setTimeout(() => {
-				reconnectTimer = undefined;
-				connect();
-			}, delay);
+			const timer = new AbortController();
+			reconnectTimer = timer;
+			void sleep(delay, timer.signal)
+				.then(() => {
+					if (timer.signal.aborted) return;
+					reconnectTimer = undefined;
+					connect();
+				})
+				.catch(() => {
+					/* Cancellation during workflow shutdown. */
+				});
 		};
 
 		const connect = (): void => {
@@ -342,11 +347,7 @@ export class MatrixE2eeTrigger implements INodeType {
 
 			let nextSocket: WebSocket;
 			try {
-				nextSocket = new WebSocket(wsUrl, {
-					headers: {
-						Authorization: `Bearer ${apiToken}`,
-					},
-				});
+				nextSocket = new WebSocket(wsUrl);
 			} catch {
 				scheduleReconnect();
 				return;
@@ -354,19 +355,45 @@ export class MatrixE2eeTrigger implements INodeType {
 
 			socket = nextSocket;
 
-			nextSocket.on('open', () => {
+			let authenticated = false;
+			const deadline = new AbortController();
+			authTimer = deadline;
+			void sleep(AUTH_TIMEOUT_MS, deadline.signal)
+				.then(() => {
+					if (!deadline.signal.aborted && socket === nextSocket) nextSocket.close();
+				})
+				.catch(() => {
+					/* Authentication completed or workflow stopped. */
+				});
+			nextSocket.addEventListener('open', () => {
 				if (active && socket === nextSocket) {
-					reconnectAttempts = 0;
+					nextSocket.send(JSON.stringify({ type: 'authenticate', token: apiToken }));
 				}
 			});
 
-			nextSocket.on('message', (data: RawData) => {
+			nextSocket.addEventListener('message', ({ data }) => {
 				if (!active || socket !== nextSocket) {
 					return;
 				}
 
 				void (async () => {
-					const payload = JSON.parse(rawDataToText(data)) as unknown;
+					if (typeof data !== 'string') return;
+					const payload = JSON.parse(data) as unknown;
+					if (!authenticated) {
+						if (
+							typeof payload === 'object' &&
+							payload !== null &&
+							'type' in payload &&
+							payload.type === 'authenticated'
+						) {
+							authenticated = true;
+							reconnectAttempts = 0;
+							clearAuthTimer();
+						} else {
+							nextSocket.close();
+						}
+						return;
+					}
 					const event = normalizeMatrixE2eeEvent(payload);
 
 					if (event === undefined) {
@@ -381,21 +408,30 @@ export class MatrixE2eeTrigger implements INodeType {
 						downloadImages,
 						binaryPropertyName,
 					);
-					this.emit([[executionData]]);
+					if (active && socket === nextSocket) this.emit([[executionData]]);
 				})().catch((error: unknown) => {
 					const message = error instanceof Error ? error.message : 'Unknown error';
 					this.saveFailedExecution(new NodeOperationError(this.getNode(), message));
 				});
 			});
 
-			nextSocket.on('error', () => {
+			nextSocket.addEventListener('error', () => {
 				// The close handler performs reconnection after transport errors.
 			});
 
-			nextSocket.on('close', () => {
+			nextSocket.addEventListener('close', (event) => {
 				if (socket === nextSocket) {
 					socket = undefined;
-					scheduleReconnect();
+					clearAuthTimer();
+					if (event.code === 4401) {
+						active = false;
+						this.saveFailedExecution(
+							new NodeOperationError(
+								this.getNode(),
+								'Gateway authentication failed. Check the API Token and reactivate the workflow.',
+							),
+						);
+					} else scheduleReconnect();
 				}
 			});
 		};
@@ -406,6 +442,7 @@ export class MatrixE2eeTrigger implements INodeType {
 			closeFunction: async () => {
 				active = false;
 				clearReconnectTimer();
+				clearAuthTimer();
 
 				const currentSocket = socket;
 				socket = undefined;

@@ -35,7 +35,12 @@ The node package and gateway are versioned independently. See the
 [gateway compatibility table](https://github.com/spindle-studio/n8n-matrix-e2ee#compatibility)
 for supported combinations and check node release notes for new requirements.
 
-Use a current n8n release that supports API version 1 community nodes. Outgoing
+Requires Node.js 22.4 or later with the built-in WebSocket API and a current n8n
+release supporting API version 1 community nodes. The trigger uses n8n's
+abortable `sleep` helper (validated with `n8n-workflow` 2.35.3). Gateway 0.2.0 or
+later is required; gateway 0.1.0 used a different WebSocket authentication protocol.
+The package has no external runtime dependencies and enables n8n's strict lint
+checks. This does not mean the package has been verified by n8n. Outgoing
 audio uses the stable `m.audio` message type with MSC3245 compatibility
 metadata. Element X and compatible clients render it as a voice message with a
 waveform preview; other clients can fall back to generic audio attachments.

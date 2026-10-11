@@ -112,7 +112,7 @@ numbers are not required; use a gateway compatible with your node version.
 
 | Node version | Gateway compatibility |
 | --- | --- |
-| 0.1.0 | Gateway 0.1.0 or a later release preserving the required `/v1` API |
+| 0.1.0 | Gateway 0.2.0 or later with first-message WebSocket authentication |
 
 Node release notes identify any newer gateway required by new features.
 
