@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/spindle-studio/n8n-matrix-e2ee/compare/nodes-v0.1.0...nodes-v0.1.1) (2026-10-11)
+
+
+### Documentation
+
+* **nodes:** simplify public setup and usage guides ([3521713](https://github.com/spindle-studio/n8n-matrix-e2ee/commit/35217133f3bc1f0ec288d14efbea0e43675e5626))
+
 ## 0.1.0 (2026-10-11)
 
 
