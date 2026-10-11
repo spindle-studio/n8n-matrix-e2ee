@@ -1,17 +1,18 @@
-# Security policy
+# Security
 
-## Reporting a vulnerability
+Report vulnerabilities through [GitHub's private reporting form](https://github.com/spindle-studio/n8n-matrix-e2ee/security/advisories/new)
+or email [ben@spindle.studio](mailto:ben@spindle.studio). Please don't post exploit
+details in public issues.
 
-Please report suspected vulnerabilities privately to [ben@spindle.studio](mailto:ben@spindle.studio)
-or use GitHub's private vulnerability reporting feature when it is enabled.
-Do not disclose exploit details in public issues.
+Describe the problem and how to reproduce it using made-up data. Remove
+passwords, tokens, private messages, and other sensitive details from logs.
+Never attach Matrix session files or encryption stores.
 
-Do not include Matrix passwords, API tokens, access tokens, room content,
-`matrix_session.json`, `matrix_store`, or full unredacted logs in a report.
+## Running the gateway
 
-## Operational security
+Keep the gateway on a trusted private network. Anyone with its API token and
+network access can use the bot, so use a strong, unique token and don't expose
+the service directly to the internet.
 
-The gateway holds Matrix credentials and E2EE state and is intended only for a
-trusted internal network. Restrict access to the gateway, use a strong unique
-`API_SECRET_TOKEN`, protect the persistent `/data` volume, and do not expose the
-service directly to the public internet.
+Protect `.env` and the `/data` volume: they hold the bot's credentials, session,
+and encryption keys.
