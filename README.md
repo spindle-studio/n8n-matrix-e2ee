@@ -1,30 +1,20 @@
 # n8n Matrix E2EE
 
-Use Matrix rooms in n8n workflows without giving n8n access to Matrix account
-credentials or encryption keys. This project provides:
+Send and receive messages in encrypted Matrix rooms from n8n.
 
-- a Rust gateway that signs in to Matrix, manages the persistent E2EE store,
-  and exposes a small authenticated API; and
-- an n8n community node for sending text, images, and Ogg/Opus audio messages,
-  managing typing indicators, and triggering workflows from decrypted messages.
-
-The gateway is for a trusted internal network. It is not a public Matrix proxy:
-protect its API token, restrict who can reach it, and keep its persistent data
-private.
+The **gateway** connects to Matrix and stores the bot's session and encryption
+keys. The **n8n nodes** connect to the gateway to send text, images, and Ogg/Opus
+audio, set typing indicators, or start a workflow when a message arrives.
 
 ## Getting started
 
-Before starting, you need an existing Matrix homeserver, a dedicated bot account
-on that homeserver, Docker, and an n8n instance that can reach the
-gateway over the network.
-
-Gateway images support Linux AMD64 and ARM64. Docker selects the matching
-architecture automatically; the same commands work on either platform.
+You'll need a Matrix bot account, Docker or Podman, and a self-hosted n8n instance.
+The gateway image supports Linux AMD64 and ARM64. The commands below use Docker;
+replace `docker` with `podman` if that's what you use.
 
 ### 1. Configure the gateway
 
-Create a directory for the gateway and save
-[`.env.example`](gateway/.env.example) there as `.env`. Fill in your homeserver and bot account details:
+Save [`.env.example`](gateway/.env.example) as `.env` and fill in your details:
 
 ```dotenv
 HOMESERVER_URL=https://matrix.example.org
@@ -34,14 +24,13 @@ API_SECRET_TOKEN=your-random-api-token
 ALLOWED_INVITERS=@you:example.org
 ```
 
-Generate an API token with `openssl rand -hex 32` and paste it into `.env`.
-Keep this file private. `ALLOWED_INVITERS` accepts comma-separated Matrix IDs;
-if it is empty, the gateway accepts no invitations. The listening port defaults
-to `8080`.
+Generate the API token with `openssl rand -hex 32`. Keep `.env` private.
+`ALLOWED_INVITERS` is a comma-separated list of people who can invite the bot
+to rooms. Leave it empty to reject all invitations.
 
 ### 2. Start the gateway
 
-Run this from the directory containing `.env`:
+From the directory containing `.env`, run:
 
 ```sh
 docker run --detach --name n8n-matrix-e2ee-gateway \
@@ -49,22 +38,31 @@ docker run --detach --name n8n-matrix-e2ee-gateway \
   --env-file .env \
   --publish 127.0.0.1:8080:8080 \
   --volume n8n-matrix-e2ee-data:/data \
-  ghcr.io/spindle-studio/n8n-matrix-e2ee-gateway:latest
+  ghcr.io/spindle-studio/n8n-matrix-e2ee-gateway:0.2.0
 ```
 
-Docker creates the persistent volume automatically. Keep it across upgrades:
-`/data` holds the bot's login session, device identity, and encryption keys.
-For production, pin a published version tag instead of `latest`.
+Keep the data volume when upgrading: it contains the bot's login and encryption
+keys. Keep the gateway on a private network and protect its API token.
 
-Check startup logs, then confirm the gateway is ready:
+Check that it has started:
 
 ```sh
-docker logs n8n-matrix-e2ee-gateway
 curl --fail http://localhost:8080/healthz
 ```
 
-For n8n running on the same host, use `http://localhost:8080` as the gateway URL.
-If n8n runs in Docker, connect both containers to a shared network:
+If it isn't ready, check `docker logs n8n-matrix-e2ee-gateway`.
+
+### 3. Connect n8n
+
+In n8n, open **Settings > Community Nodes** and install
+`@spindle-studio/n8n-nodes-matrix-e2ee`.
+
+Create **Matrix E2EE Gateway API** credentials with:
+
+- **Gateway Base URL:** `http://localhost:8080` if n8n runs directly on the same host.
+- **API Token:** the value of `API_SECRET_TOKEN` in `.env`.
+
+If n8n runs in a container, put both containers on a shared network:
 
 ```sh
 docker network create n8n-matrix-e2ee
@@ -72,61 +70,42 @@ docker network connect n8n-matrix-e2ee n8n-matrix-e2ee-gateway
 docker network connect n8n-matrix-e2ee YOUR_N8N_CONTAINER
 ```
 
-Then use `http://n8n-matrix-e2ee-gateway:8080` in n8n. Replace
-`YOUR_N8N_CONTAINER` with your n8n container's name. For n8n on another machine,
-make the gateway reachable through a private network; the command above exposes
-it only on the local host.
+Replace `YOUR_N8N_CONTAINER` with its name, then use
+`http://n8n-matrix-e2ee-gateway:8080` as the gateway URL. For n8n on another
+machine, provide access over a private network; the command above exposes the
+port only on the local host.
 
-### 3. Connect n8n
+Test and save the credentials.
 
-Install `@spindle-studio/n8n-nodes-matrix-e2ee` from
-**Settings > Community Nodes** in n8n. See the
-[n8n installation guide](https://docs.n8n.io/integrations/community-nodes/installation/)
-for other installation methods.
+### 4. Receive your first message
 
-1. Create **Matrix E2EE Gateway API** credentials.
-2. Set **Gateway Base URL** to the address n8n uses to reach the gateway.
-3. Set **API Token** to the same value as `API_SECRET_TOKEN`.
-4. Test and save the credential.
-5. Add **Matrix E2EE Trigger** to receive decrypted room messages, or
-   **Matrix E2EE** to send a reply.
+Invite the bot to a room from an account listed in `ALLOWED_INVITERS`.
+Add **Matrix E2EE Trigger** to a workflow, select your credentials, and click
+**Listen for test event**. Send a new message to the room.
 
-Invite the bot account to a room from a Matrix ID listed in `ALLOWED_INVITERS`.
-The gateway accepts permitted invitations and ignores its own outbound messages,
-which prevents workflows from triggering on their replies.
+The trigger receives text, image, and audio messages and can download media for
+later steps. It only receives messages while listening; earlier messages aren't
+replayed. Messages sent by the bot itself are ignored.
 
-## What the nodes do
-
-**Matrix E2EE** sends text, images from n8n binary data, and Ogg/Opus audio
-messages, and typing indicators. **Matrix E2EE Trigger** receives text, image,
-and audio messages; it can optionally download received media into an n8n
-binary property for downstream processing.
-
-Matrix passwords and encryption keys belong only in the gateway. The n8n
-credential contains the gateway URL and API token, not Matrix credentials.
+Use **Matrix E2EE** to send a message or set a typing indicator.
 
 ## Compatibility
 
-The node package and gateway are versioned independently. Matching version
-numbers are not required; use a gateway compatible with your node version.
-
-| Node version | Gateway compatibility |
+| n8n package | Gateway |
 | --- | --- |
-| 0.1.0 | Gateway 0.2.0 or later with first-message WebSocket authentication |
+| 0.1.0 | 0.2.0 or later supporting the same API |
 
-Node release notes identify any newer gateway required by new features.
+Use a current self-hosted n8n release with Node.js 22.4 or later. The package
+has not been verified for n8n Cloud. The gateway and nodes have separate versions;
+check release notes before upgrading.
 
-## Project status and support
+## Help and contributions
 
-This is an independent community node, not an official n8n or Matrix project.
-Report bugs and feature requests through GitHub. Read
-[SECURITY.md](SECURITY.md) before reporting a vulnerability, and
-[CONTRIBUTING.md](CONTRIBUTING.md) before sending a change.
-For other enquiries, contact [ben@spindle.studio](mailto:ben@spindle.studio).
+[Open an issue](https://github.com/spindle-studio/n8n-matrix-e2ee/issues) for bugs
+or feature requests. For security issues, follow the [security policy](SECURITY.md).
+Other enquiries: [ben@spindle.studio](mailto:ben@spindle.studio).
 
-For architecture, local development, API reference, and Matrix device
-troubleshooting, see [AGENTS.md](AGENTS.md).
+See [Contributing](CONTRIBUTING.md) to make a change, or the
+[development guide](AGENTS.md) for local setup, the API, and Matrix device troubleshooting.
 
-## License
-
-[MIT](LICENSE)
+This is an independent community project. Licensed under [MIT](LICENSE).
