@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/spindle-studio/n8n-matrix-e2ee/compare/gateway-v0.2.0...gateway-v0.3.0) (2026-10-11)
+
+
+### Features
+
+* forward Matrix mentions through gateway and trigger ([f82cf16](https://github.com/spindle-studio/n8n-matrix-e2ee/commit/f82cf16c2af122ed0f2faf373c698926cac0be37))
+
 ## [0.2.0](https://github.com/spindle-studio/n8n-matrix-e2ee/compare/gateway-v0.1.0...gateway-v0.2.0) (2026-10-11)
 
 
