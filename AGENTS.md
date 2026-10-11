@@ -119,6 +119,23 @@ networks; never log authentication payloads. HTTP authentication is unchanged.
 The WebSocket stream provides text, image, and audio events. All include
 `room_id`, `sender`, `event_id`, `body`, and `message_type`; media events can
 also include file, MIME, size, image-dimension, duration, and caption metadata.
+When Matrix supplies `m.mentions`, events also include a `mentions` object:
+
+```json
+{"user_ids": ["@ben:example.org"], "room": false}
+```
+
+`user_ids` contains the mentioned Matrix IDs (unique and sorted); `room` indicates
+an `@room` mention. Both fields are present when `mentions` is present, defaulting
+to `[]` and `false`. Missing Matrix metadata omits `mentions` entirely, preserving
+the distinction from an explicitly empty mentions object. Text, image, and audio
+messages use the same format. Mentions are never inferred from message text.
+This is sender-provided metadata, not proof of notification delivery or permission
+to notify the room. The n8n trigger preserves this optional object in its JSON output. Events from
+older gateways without `mentions` remain valid. When present, `mentions` must
+contain a string array `user_ids` and a boolean `room`; malformed metadata is
+rejected by the trigger like other invalid event fields.
+
 Outgoing audio includes MSC3245 compatibility metadata for a voice marker and
 waveform preview. Element X and compatible clients render it as a voice
 message, while other clients can fall back to generic audio attachments. The

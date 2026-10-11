@@ -15,6 +15,11 @@ const AUTH_TIMEOUT_MS = 10_000;
 
 type MatrixE2eeMessageType = 'text' | 'image' | 'audio';
 
+interface MatrixE2eeMentions extends IDataObject {
+	user_ids: string[];
+	room: boolean;
+}
+
 interface MatrixE2eeEvent extends IDataObject {
 	event_type: 'room.message';
 	room_id: string;
@@ -22,6 +27,7 @@ interface MatrixE2eeEvent extends IDataObject {
 	event_id: string;
 	body: string;
 	message_type: MatrixE2eeMessageType;
+	mentions?: MatrixE2eeMentions;
 	caption?: string;
 	file_name?: string;
 	mime_type?: string;
@@ -67,6 +73,18 @@ function isOptionalNonNegativeNumber(value: unknown): value is number | undefine
 	return value === undefined || (typeof value === 'number' && Number.isFinite(value) && value >= 0);
 }
 
+function isMentions(value: unknown): value is MatrixE2eeMentions {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+		return false;
+	}
+	const mentions = value as Record<string, unknown>;
+	return (
+		Array.isArray(mentions.user_ids) &&
+		mentions.user_ids.every(isNonEmptyString) &&
+		typeof mentions.room === 'boolean'
+	);
+}
+
 function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined {
 	if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
 		return undefined;
@@ -102,6 +120,11 @@ function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined
 		return undefined;
 	}
 
+	if (event.mentions !== undefined && !isMentions(event.mentions)) {
+		return undefined;
+	}
+	const mentions = event.mentions;
+
 	const roomId = event.room_id as string;
 	const sender = event.sender as string;
 	const eventId = event.event_id as string;
@@ -121,6 +144,9 @@ function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined
 		event_id: eventId,
 		body,
 		message_type: messageType === 'image' || messageType === 'audio' ? messageType : 'text',
+		...(mentions === undefined
+			? {}
+			: { mentions: { user_ids: [...mentions.user_ids], room: mentions.room } }),
 		caption,
 		file_name: fileName,
 		mime_type: mimeType,
