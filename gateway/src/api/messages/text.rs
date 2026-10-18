@@ -1,5 +1,6 @@
 use axum::{Json, extract::State, http::HeaderMap};
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+use pulldown_cmark::{Event, Options, Parser, TagEnd, html};
 use serde::Deserialize;
 use tracing::{error, info};
 
@@ -15,7 +16,7 @@ use crate::api::{
 #[derive(Debug, Deserialize)]
 pub(super) struct SendTextRequest {
     room_id: String,
-    message: String,
+    body: String,
 }
 
 pub(super) async fn send_text(
@@ -24,24 +25,108 @@ pub(super) async fn send_text(
     Json(request): Json<SendTextRequest>,
 ) -> ApiResult<Json<MessageActionResponse>> {
     authorize_request(&state.api_secret_token, &headers)?;
-    if request.message.trim().is_empty() {
-        return Err(client_error("message must not be empty"));
-    }
+    let content = build_text_message_content(&request.body)
+        .ok_or_else(|| client_error("body must not be empty"))?;
 
     let room_id = parse_room_id(&request.room_id)?;
     let room = get_known_room(&state.client, &room_id)?;
     info!(room_id = %room_id, message_type = "text", "sending Matrix message");
-    let response = room
-        .send(RoomMessageEventContent::text_plain(request.message))
-        .await
-        .map_err(|error| {
-            error!(%error, room_id = %room_id, "failed to send Matrix message");
-            server_error("failed to send Matrix message")
-        })?;
+    let response = room.send(content).await.map_err(|error| {
+        error!(%error, room_id = %room_id, "failed to send Matrix message");
+        server_error("failed to send Matrix message")
+    })?;
 
     Ok(message_action_response(
         room_id.to_string(),
         response.response.event_id.to_string(),
         GatewayMessageType::Text,
     ))
+}
+
+fn build_text_message_content(markdown: &str) -> Option<RoomMessageEventContent> {
+    if markdown.trim().is_empty() {
+        return None;
+    }
+
+    let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
+    let events: Vec<Event<'_>> = Parser::new_ext(markdown, options).collect();
+
+    let mut plain_body = String::new();
+    for event in &events {
+        match event {
+            Event::Text(text) | Event::Code(text) => plain_body.push_str(text),
+            Event::SoftBreak | Event::HardBreak => plain_body.push('\n'),
+            Event::End(
+                TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::Item
+                | TagEnd::CodeBlock
+                | TagEnd::BlockQuote(_)
+                | TagEnd::TableRow
+                | TagEnd::TableHead,
+            ) => {
+                if !plain_body.ends_with('\n') {
+                    plain_body.push('\n');
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let plain_body = plain_body.trim().to_owned();
+    if plain_body.is_empty() {
+        return None;
+    }
+
+    let mut formatted_body = String::new();
+    html::push_html(&mut formatted_body, events.into_iter());
+    let formatted_body = formatted_body.trim().to_owned();
+
+    Some(RoomMessageEventContent::text_html(
+        plain_body,
+        formatted_body,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn converts_markdown_to_plain_body_and_html_formatted_body() {
+        let content = build_text_message_content("Hello **world** and `code`!").unwrap();
+        let json = serde_json::to_value(content).unwrap();
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "msgtype": "m.text",
+                "body": "Hello world and code!",
+                "format": "org.matrix.custom.html",
+                "formatted_body": "<p>Hello <strong>world</strong> and <code>code</code>!</p>"
+            })
+        );
+    }
+
+    #[test]
+    fn converts_plain_text_to_body_and_html_formatted_body() {
+        let content = build_text_message_content("Hello Matrix").unwrap();
+        let json = serde_json::to_value(content).unwrap();
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "msgtype": "m.text",
+                "body": "Hello Matrix",
+                "format": "org.matrix.custom.html",
+                "formatted_body": "<p>Hello Matrix</p>"
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_empty_or_whitespace_only_body() {
+        assert!(build_text_message_content("").is_none());
+        assert!(build_text_message_content("   \n\t  ").is_none());
+    }
 }

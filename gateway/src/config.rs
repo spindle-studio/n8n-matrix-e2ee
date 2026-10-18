@@ -1,8 +1,9 @@
-use std::{collections::HashSet, env};
+use std::{collections::HashSet, env, path::PathBuf};
 
 use thiserror::Error;
 
 pub(crate) const DEFAULT_PORT: u16 = 8080;
+pub(crate) const DEFAULT_DATA_DIR: &str = "/data";
 
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
@@ -12,6 +13,7 @@ pub(crate) struct Config {
     pub(crate) api_secret_token: String,
     pub(crate) allowed_inviters: HashSet<String>,
     pub(crate) port: u16,
+    pub(crate) data_dir: PathBuf,
 }
 
 #[derive(Debug, Error)]
@@ -44,6 +46,12 @@ impl Config {
                 .map(|value| value.parse())
                 .transpose()?
                 .unwrap_or(DEFAULT_PORT),
+            data_dir: env::var("DATA_DIR")
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_DIR)),
         })
     }
 }
@@ -74,6 +82,7 @@ mod tests {
             env::remove_var("ALLOWED_INVITERS");
             env::remove_var("API_SECRET_TOKEN");
             env::remove_var("PORT");
+            env::remove_var("DATA_DIR");
             env::set_var("HOMESERVER_URL", "https://matrix.example.org");
             env::set_var("API_SECRET_TOKEN", "gateway-secret");
             env::set_var("MATRIX_USER", "@bot:example.org");
@@ -86,6 +95,26 @@ mod tests {
         assert_eq!(config.api_secret_token, "gateway-secret");
         assert!(config.allowed_inviters.is_empty());
         assert_eq!(config.port, DEFAULT_PORT);
+        assert_eq!(config.data_dir, PathBuf::from(DEFAULT_DATA_DIR));
+    }
+
+    #[test]
+    fn configuration_uses_custom_data_dir() {
+        let _guard = env_lock().lock().expect("env lock should not be poisoned");
+        unsafe {
+            env::set_var("HOMESERVER_URL", "https://matrix.example.org");
+            env::set_var("API_SECRET_TOKEN", "gateway-secret");
+            env::set_var("MATRIX_USER", "@bot:example.org");
+            env::set_var("MATRIX_PASSWORD", "secret");
+            env::set_var("DATA_DIR", " ./data ");
+        }
+
+        let config = Config::from_env().expect("configuration should parse");
+        assert_eq!(config.data_dir, PathBuf::from("./data"));
+
+        unsafe {
+            env::remove_var("DATA_DIR");
+        }
     }
 
     #[test]

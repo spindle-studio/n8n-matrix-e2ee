@@ -35,7 +35,7 @@
       "dist/credentials/MatrixE2eeApi.credentials.js"
     ],
     "nodes": [
-      "dist/nodes/MatrixE2ee/MatrixE2eeAction.node.js",
+      "dist/nodes/MatrixE2ee/MatrixE2ee.node.js",
       "dist/nodes/MatrixE2ee/MatrixE2eeTrigger.node.js"
     ]
   },

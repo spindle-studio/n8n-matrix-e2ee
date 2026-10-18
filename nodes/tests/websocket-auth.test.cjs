@@ -1,6 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { setTimeout: delay } = require('node:timers/promises');
+const { MatrixE2ee } = require('../dist/nodes/MatrixE2ee/MatrixE2ee.node.js');
 const { MatrixE2eeTrigger } = require('../dist/nodes/MatrixE2ee/MatrixE2eeTrigger.node.js');
 
 class Socket extends EventTarget {
@@ -51,7 +52,7 @@ async function start(t) {
 			baseUrl: 'https://gateway.example.org',
 			apiToken: 'test-secret',
 		}),
-		getNodeParameter: (name) => (name === 'downloadImages' ? false : 'media'),
+		getNodeParameter: (name) => (name === 'downloadMedia' ? false : 'media'),
 		getNode: () => ({
 			name: 'Test trigger',
 			type: 'matrixE2eeTrigger',
@@ -147,4 +148,181 @@ test('invalid mention metadata is rejected without breaking subsequent events', 
 	socket.message(roomEvent);
 	await delay(0);
 	assert.equal(emitted.length, 1);
+});
+
+test('formatted_body is preserved on text events and rejected on image/audio or when malformed', async (t) => {
+	const { socket, emitted } = await start(t);
+	socket.open();
+	socket.message({ type: 'authenticated' });
+
+	socket.message({ ...roomEvent, message_type: 'text', formatted_body: '<p><strong>hello</strong></p>' });
+	await delay(0);
+	assert.equal(emitted.length, 1);
+	assert.equal(emitted[0][0][0].json.formatted_body, '<p><strong>hello</strong></p>');
+
+	for (const invalidEvent of [
+		{ ...roomEvent, message_type: 'text', formatted_body: 123 },
+		{ ...roomEvent, message_type: 'image', formatted_body: '<b>caption</b>' },
+		{ ...roomEvent, message_type: 'audio', formatted_body: '<b>caption</b>' },
+	]) {
+		socket.message(invalidEvent);
+	}
+	await delay(0);
+	assert.equal(emitted.length, 1);
+
+	socket.message({ ...roomEvent, message_type: 'text' });
+	await delay(0);
+	assert.equal(emitted.length, 2);
+	assert.equal(Object.hasOwn(emitted[1][0][0].json, 'formatted_body'), false);
+	assert.equal(Object.hasOwn(emitted[1][0][0].json, 'caption'), false);
+});
+
+test('consolidated action node sends text, image, audio, and typing requests', async () => {
+	const requests = [];
+	const makeContext = (params, binary = {}) => ({
+		getInputData: () => [{ json: {}, binary }],
+		getCredentials: async () => ({
+			baseUrl: 'https://gateway.example.org/',
+			apiToken: 'test-secret',
+		}),
+		getNodeParameter: (name) => params[name],
+		getNode: () => ({
+			name: 'Matrix E2EE',
+			type: 'matrixE2ee',
+			typeVersion: 1,
+			position: [0, 0],
+			parameters: {},
+		}),
+		continueOnFail: () => false,
+		helpers: {
+			assertBinaryData: (_index, propertyName) => {
+				const data = binary[propertyName];
+				assert.ok(data, `expected binary property ${propertyName}`);
+				return data;
+			},
+			getBinaryDataBuffer: async () => Buffer.from('binary-bytes'),
+			httpRequestWithAuthentication: async function (credentialType, options) {
+				assert.equal(credentialType, 'matrixE2eeApi');
+				requests.push(options);
+				return { ok: true };
+			},
+		},
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'message',
+			roomId: '!room:example.org',
+			messageType: 'text',
+			message: 'Hello **Markdown**',
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/text',
+		body: {
+			room_id: '!room:example.org',
+			body: 'Hello **Markdown**',
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext(
+			{
+				operation: 'message',
+				roomId: '!room:example.org',
+				messageType: 'image',
+				binaryPropertyName: 'image',
+				caption: '  Alt caption  ',
+			},
+			{
+				image: {
+					mimeType: 'image/png',
+					fileName: 'photo.png',
+				},
+			},
+		),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/image',
+		qs: {
+			room_id: '!room:example.org',
+			file_name: 'photo.png',
+			body: 'Alt caption',
+		},
+		headers: {
+			'Content-Type': 'image/png',
+		},
+		body: Buffer.from('binary-bytes'),
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext(
+			{
+				operation: 'message',
+				roomId: '!room:example.org',
+				messageType: 'audio',
+				binaryPropertyName: 'audio',
+				caption: 'Voice note',
+			},
+			{
+				audio: {
+					mimeType: 'audio/ogg',
+				},
+			},
+		),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/audio',
+		qs: {
+			room_id: '!room:example.org',
+			file_name: 'audio-message.ogg',
+			body: 'Voice note',
+		},
+		headers: {
+			'Content-Type': 'audio/ogg',
+		},
+		body: Buffer.from('binary-bytes'),
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'typingIndicator',
+			roomId: '!room:example.org',
+			typingState: 'start',
+			timeoutSeconds: 25,
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/typing',
+		body: {
+			room_id: '!room:example.org',
+			typing: true,
+			timeout_seconds: 25,
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'typingIndicator',
+			roomId: '!room:example.org',
+			typingState: 'stop',
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/typing',
+		body: {
+			room_id: '!room:example.org',
+			typing: false,
+		},
+		json: true,
+	});
 });

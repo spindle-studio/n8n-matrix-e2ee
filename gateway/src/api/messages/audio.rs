@@ -42,7 +42,7 @@ const WAVEFORM_COMPRESSION_EXPONENT: f64 = 0.25;
 pub(super) struct SendAudioQuery {
     room_id: String,
     file_name: Option<String>,
-    caption: Option<String>,
+    body: Option<String>,
 }
 
 fn downmix_pcm(pcm: &[i16], channels: usize) -> Vec<i16> {
@@ -108,7 +108,7 @@ pub(super) async fn send_audio(
     let room_id = parse_room_id(&query.room_id)?;
     let room = get_known_room(&state.client, &room_id)?;
     let file_name = audio_file_name(query.file_name.as_deref());
-    let message_body = audio_body(query.caption.as_deref());
+    let message_body = audio_body(query.body.as_deref());
     let source = upload_audio_media(&state.client, &room, &headers, body.to_vec()).await?;
     let content = audio_message_content(
         message_body,

@@ -26,9 +26,9 @@ interface MatrixE2eeEvent extends IDataObject {
 	sender: string;
 	event_id: string;
 	body: string;
+	formatted_body?: string;
 	message_type: MatrixE2eeMessageType;
 	mentions?: MatrixE2eeMentions;
-	caption?: string;
 	file_name?: string;
 	mime_type?: string;
 	size_bytes?: number;
@@ -108,8 +108,16 @@ function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined
 	) {
 		return undefined;
 	}
+	const normalizedMessageType: MatrixE2eeMessageType =
+		messageType === 'image' || messageType === 'audio' ? messageType : 'text';
+	if (normalizedMessageType === 'text') {
+		if (!isOptionalString(event.formatted_body)) {
+			return undefined;
+		}
+	} else if (event.formatted_body !== undefined) {
+		return undefined;
+	}
 	if (
-		!isOptionalString(event.caption) ||
 		!isOptionalString(event.file_name) ||
 		!isOptionalString(event.mime_type) ||
 		!isOptionalNonNegativeNumber(event.size_bytes) ||
@@ -129,7 +137,7 @@ function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined
 	const sender = event.sender as string;
 	const eventId = event.event_id as string;
 	const body = event.body as string;
-	const caption = event.caption as string | undefined;
+	const formattedBody = event.formatted_body as string | undefined;
 	const fileName = event.file_name as string | undefined;
 	const mimeType = event.mime_type as string | undefined;
 	const sizeBytes = event.size_bytes as number | undefined;
@@ -143,11 +151,11 @@ function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined
 		sender,
 		event_id: eventId,
 		body,
-		message_type: messageType === 'image' || messageType === 'audio' ? messageType : 'text',
+		...(formattedBody === undefined ? {} : { formatted_body: formattedBody }),
+		message_type: normalizedMessageType,
 		...(mentions === undefined
 			? {}
 			: { mentions: { user_ids: [...mentions.user_ids], room: mentions.room } }),
-		caption,
 		file_name: fileName,
 		mime_type: mimeType,
 		size_bytes: sizeBytes,
@@ -175,7 +183,7 @@ function normalizeBinaryResponse(responseData: unknown): Buffer | undefined {
 	return undefined;
 }
 
-async function downloadGatewayImage(
+async function downloadGatewayMedia(
 	this: ITriggerFunctions,
 	baseUrl: string,
 	apiToken: string,
@@ -215,16 +223,16 @@ async function buildExecutionData(
 	baseUrl: string,
 	apiToken: string,
 	event: MatrixE2eeEvent,
-	downloadImages: boolean,
+	downloadMedia: boolean,
 	binaryPropertyName: string,
 ): Promise<INodeExecutionData> {
 	const item: INodeExecutionData = {
 		json: { ...event },
 	};
 
-	if ((event.message_type === 'image' || event.message_type === 'audio') && downloadImages) {
+	if ((event.message_type === 'image' || event.message_type === 'audio') && downloadMedia) {
 		item.binary = {
-			[binaryPropertyName]: await downloadGatewayImage.call(this, baseUrl, apiToken, event),
+			[binaryPropertyName]: await downloadGatewayMedia.call(this, baseUrl, apiToken, event),
 		};
 	}
 
@@ -242,8 +250,7 @@ export class MatrixE2eeTrigger implements INodeType {
 		group: ['trigger'],
 		version: [1],
 		subtitle: 'New Matrix message',
-		description:
-			'Starts a workflow when the Matrix E2EE gateway receives a decrypted Matrix message, image, or audio message',
+		description: 'Send and receive encrypted Matrix messages',
 		defaults: {
 			name: 'Matrix E2EE Trigger',
 		},
@@ -258,20 +265,20 @@ export class MatrixE2eeTrigger implements INodeType {
 		properties: [
 			{
 				displayName: 'Download Media',
-				name: 'downloadImages',
+				name: 'downloadMedia',
 				type: 'boolean',
 				default: true,
 				description:
 					'Whether to download image or audio message content and attach it as binary data to the output item',
 			},
 			{
-				displayName: 'Binary Property',
+				displayName: 'Output Data Field Name',
 				name: 'binaryPropertyName',
 				type: 'string',
-				default: 'image',
+				default: 'data',
 				displayOptions: {
 					show: {
-						downloadImages: [true],
+						downloadMedia: [true],
 					},
 				},
 				description: 'The output binary property name to use for downloaded image or audio content',
@@ -283,7 +290,7 @@ export class MatrixE2eeTrigger implements INodeType {
 		const credentials = await this.getCredentials('matrixE2eeApi');
 		const baseUrl = credentials.baseUrl;
 		const apiToken = credentials.apiToken;
-		const downloadImages = this.getNodeParameter('downloadImages') as boolean;
+		const downloadMedia = this.getNodeParameter('downloadMedia') as boolean;
 		const binaryPropertyName = this.getNodeParameter('binaryPropertyName') as string;
 
 		if (typeof baseUrl !== 'string' || baseUrl.trim().length === 0) {
@@ -298,8 +305,8 @@ export class MatrixE2eeTrigger implements INodeType {
 				'The API Token credential must be a non-empty string.',
 			);
 		}
-		if (downloadImages && binaryPropertyName.trim().length === 0) {
-			throw new NodeOperationError(this.getNode(), 'Binary Property must not be empty.');
+		if (downloadMedia && binaryPropertyName.trim().length === 0) {
+			throw new NodeOperationError(this.getNode(), 'Output Data Field Name must not be empty.');
 		}
 
 		let wsUrl: string;
@@ -431,7 +438,7 @@ export class MatrixE2eeTrigger implements INodeType {
 						baseUrl,
 						apiToken,
 						event,
-						downloadImages,
+						downloadMedia,
 						binaryPropertyName,
 					);
 					if (active && socket === nextSocket) this.emit([[executionData]]);

@@ -1,5 +1,5 @@
 use matrix_sdk::ruma::events::room::message::{
-    ImageMessageEventContent, MessageType, RoomMessageEventContent,
+    ImageMessageEventContent, MessageFormat, MessageType, RoomMessageEventContent,
 };
 use serde::Serialize;
 
@@ -25,12 +25,12 @@ pub(crate) enum GatewayEvent {
         room_id: String,
         sender: String,
         body: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        formatted_body: Option<String>,
         event_id: String,
         message_type: GatewayMessageType,
         #[serde(skip_serializing_if = "Option::is_none")]
         mentions: Option<GatewayMentions>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        caption: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         file_name: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -72,10 +72,14 @@ pub(crate) fn room_message_content_to_gateway_event(
             room_id: room_id.to_owned(),
             sender: sender.to_owned(),
             body: content.body.clone(),
+            formatted_body: content
+                .formatted
+                .as_ref()
+                .filter(|formatted| formatted.format == MessageFormat::Html)
+                .map(|formatted| formatted.body.clone()),
             event_id: event_id.to_owned(),
             message_type: GatewayMessageType::Text,
             mentions,
-            caption: None,
             file_name: None,
             mime_type: None,
             size_bytes: None,
@@ -89,10 +93,10 @@ pub(crate) fn room_message_content_to_gateway_event(
                 room_id: room_id.to_owned(),
                 sender: sender.to_owned(),
                 body: content.body.clone(),
+                formatted_body: None,
                 event_id: event_id.to_owned(),
                 message_type: GatewayMessageType::Image,
                 mentions,
-                caption: content.caption().map(ToOwned::to_owned),
                 file_name: Some(content.filename().to_owned()),
                 mime_type: content.info.as_ref().and_then(|info| info.mimetype.clone()),
                 size_bytes,
@@ -105,10 +109,10 @@ pub(crate) fn room_message_content_to_gateway_event(
             room_id: room_id.to_owned(),
             sender: sender.to_owned(),
             body: content.body.clone(),
+            formatted_body: None,
             event_id: event_id.to_owned(),
             message_type: GatewayMessageType::Audio,
             mentions,
-            caption: content.caption().map(ToOwned::to_owned),
             file_name: Some(content.filename().to_owned()),
             mime_type: content.info.as_ref().and_then(|info| info.mimetype.clone()),
             size_bytes: content
@@ -163,10 +167,10 @@ mod tests {
             room_id: "!room:example.org".to_owned(),
             sender: "@sender:example.org".to_owned(),
             body: "Hello".to_owned(),
+            formatted_body: None,
             event_id: "$message".to_owned(),
             message_type: GatewayMessageType::Text,
             mentions: None,
-            caption: None,
             file_name: None,
             mime_type: None,
             size_bytes: None,
@@ -189,15 +193,40 @@ mod tests {
     }
 
     #[test]
+    fn text_gateway_events_include_html_formatted_body_only_for_text() {
+        let message = RoomMessageEventContent::text_html("Hello world", "<p>Hello <b>world</b></p>");
+        let event = room_message_content_to_gateway_event(
+            "!room:example.org",
+            "@sender:example.org",
+            "$html",
+            &message,
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::json!({
+                "event_type": "room.message",
+                "room_id": "!room:example.org",
+                "sender": "@sender:example.org",
+                "body": "Hello world",
+                "formatted_body": "<p>Hello <b>world</b></p>",
+                "event_id": "$html",
+                "message_type": "text"
+            })
+        );
+    }
+
+    #[test]
     fn image_gateway_events_include_media_metadata() {
         let message = GatewayEvent::Message {
             room_id: "!room:example.org".to_owned(),
             sender: "@sender:example.org".to_owned(),
-            body: "cat.png".to_owned(),
+            body: "Cat".to_owned(),
+            formatted_body: None,
             event_id: "$image".to_owned(),
             message_type: GatewayMessageType::Image,
             mentions: None,
-            caption: Some("Cat".to_owned()),
             file_name: Some("cat.png".to_owned()),
             mime_type: Some("image/png".to_owned()),
             size_bytes: Some(42),
@@ -208,8 +237,8 @@ mod tests {
         assert_eq!(
             serde_json::to_value(message).unwrap(),
             serde_json::json!({
-                "event_type": "room.message", "room_id": "!room:example.org", "sender": "@sender:example.org", "body": "cat.png", "event_id": "$image",
-                "message_type": "image", "caption": "Cat", "file_name": "cat.png", "mime_type": "image/png", "size_bytes": 42, "width": 640, "height": 480
+                "event_type": "room.message", "room_id": "!room:example.org", "sender": "@sender:example.org", "body": "Cat", "event_id": "$image",
+                "message_type": "image", "file_name": "cat.png", "mime_type": "image/png", "size_bytes": 42, "width": 640, "height": 480
             })
         );
     }
@@ -244,13 +273,36 @@ mod tests {
                 "body": "Audio message",
                 "event_id": "$audio",
                 "message_type": "audio",
-                "caption": "Audio message",
                 "file_name": "audio.ogg",
                 "mime_type": "audio/ogg",
                 "size_bytes": 42,
                 "duration_seconds": 3,
             })
         );
+    }
+
+    #[test]
+    fn image_and_audio_events_never_forward_formatted_body() {
+        for msgtype in ["m.image", "m.audio"] {
+            let content: RoomMessageEventContent = serde_json::from_value(serde_json::json!({
+                "msgtype": msgtype,
+                "body": "Caption",
+                "format": "org.matrix.custom.html",
+                "formatted_body": "<b>Caption</b>",
+                "url": "mxc://example.org/media",
+            }))
+            .unwrap();
+            let event = room_message_content_to_gateway_event(
+                "!room:example.org",
+                "@sender:example.org",
+                "$event",
+                &content,
+            )
+            .unwrap();
+            let payload = serde_json::to_value(event).unwrap();
+            assert!(payload.get("formatted_body").is_none(), "{msgtype}");
+            assert!(payload.get("caption").is_none(), "{msgtype}");
+        }
     }
     #[test]
     fn forwards_structured_mentions_for_all_supported_message_types() {
