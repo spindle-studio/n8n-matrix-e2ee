@@ -25,6 +25,13 @@ cargo test --locked
 cargo build --locked --release --package n8n-matrix-e2ee-gateway
 ```
 
+Run the gateway directly without Docker (loads `.env` automatically; set `DATA_DIR=./data` in `.env` or on the command line for local state persistence):
+
+```sh
+cd gateway
+DATA_DIR=./data cargo run --locked --package n8n-matrix-e2ee-gateway
+```
+
 From the repository root, build its container image and run it with persistent state:
 
 ```sh
@@ -74,9 +81,11 @@ Read its `.agents/` guidance before modifying nodes or credentials.
 
 `HOMESERVER_URL`, `MATRIX_USER`, `MATRIX_PASSWORD`, and `API_SECRET_TOKEN` are
 required. `ALLOWED_INVITERS` is a comma-separated allowlist; unset or empty
-means no invitation is authorized. `PORT` defaults to `8080`.
+means no invitation is authorized. `PORT` defaults to `8080`. `DATA_DIR`
+defaults to `/data` (set `DATA_DIR=./data` when running locally outside a
+container).
 
-The `/data` directory contains `matrix_session.json` and `matrix_store`.
+The `DATA_DIR` directory (`/data` in containers) contains `matrix_session.json` and `matrix_store`.
 Keeping both makes the gateway reuse its Matrix device after restart. A new bot
 account attempts cross-signing bootstrap at first login. If another Matrix
 client reports the device as unverified, inspect gateway startup logs:
@@ -100,10 +109,10 @@ The API is intentionally private: expose it only to trusted n8n workloads.
 | --- | --- |
 | `GET /healthz` | Returns `200` after initialization |
 | `GET /v1/auth-check` | Returns `204` for a valid bearer token |
-| `POST /v1/messages/text` | Sends `{"room_id":"...","message":"..."}` |
-| `POST /v1/messages/image` | Sends raw image bytes; query parameters supply room ID, file name, and optional caption |
-| `POST /v1/messages/audio` | Sends raw Ogg/Opus bytes as a stable `m.audio` message |
-| `POST /v1/typing` | Sets `{"room_id":"...","typing":true|false}` |
+| `POST /v1/messages/text` | Sends `{"room_id":"...","body":"..."}` (converts Markdown to plain-text `body` and HTML `formatted_body`) |
+| `POST /v1/messages/image` | Sends raw image bytes; query parameters supply room ID, file name, and optional `body` |
+| `POST /v1/messages/audio` | Sends raw Ogg/Opus bytes as a stable `m.audio` message with optional `body` |
+| `POST /v1/typing` | Sets `{"room_id":"...","typing":true|false,"timeout_seconds":30}` (`timeout_seconds` optional when `typing: true`) |
 | `GET /v1/media` | Downloads supported media by room and event ID |
 | `GET /v1/ws` | Streams validated `room.message` events over WebSocket |
 
@@ -117,9 +126,11 @@ response and authenticate again after reconnecting. Use WSS outside trusted
 networks; never log authentication payloads. HTTP authentication is unchanged.
 
 The WebSocket stream provides text, image, and audio events. All include
-`room_id`, `sender`, `event_id`, `body`, and `message_type`; media events can
-also include file, MIME, size, image-dimension, duration, and caption metadata.
-When Matrix supplies `m.mentions`, events also include a `mentions` object:
+`room_id`, `sender`, `event_id`, `body`, and `message_type`; text events include
+`formatted_body` when Matrix supplies `org.matrix.custom.html` formatting, and
+media events can also include file, MIME, size, image-dimension, and duration
+metadata. When Matrix supplies `m.mentions`, events also include a `mentions`
+object:
 
 ```json
 {"user_ids": ["@ben:example.org"], "room": false}

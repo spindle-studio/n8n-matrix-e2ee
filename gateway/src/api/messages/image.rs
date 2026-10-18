@@ -27,7 +27,7 @@ use super::{MessageActionResponse, event::GatewayMessageType, message_action_res
 pub(super) struct SendImageQuery {
     room_id: String,
     file_name: Option<String>,
-    caption: Option<String>,
+    body: Option<String>,
 }
 
 pub(super) async fn send_image(
@@ -49,16 +49,17 @@ pub(super) async fn send_image(
     let room_id = parse_room_id(&query.room_id)?;
     let room = get_known_room(&state.client, &room_id)?;
     let file_name = resolved_file_name(query.file_name.as_deref(), &content_type);
-    let caption = trimmed_non_empty(query.caption.as_deref());
+    let message_body = trimmed_non_empty(query.body.as_deref());
 
     let mut attachment_config =
         AttachmentConfig::new().info(AttachmentInfo::Image(BaseImageInfo {
             size: UInt::new(body.len() as u64),
             ..BaseImageInfo::default()
         }));
-    if let Some(caption) = caption {
-        attachment_config =
-            attachment_config.caption(Some(TextMessageEventContent::plain(caption.to_owned())));
+    if let Some(message_body) = message_body {
+        attachment_config = attachment_config.caption(Some(TextMessageEventContent::plain(
+            message_body.to_owned(),
+        )));
     }
 
     info!(room_id = %room_id, file_name, mime_type = %content_type, message_type = "image", "sending Matrix image message");

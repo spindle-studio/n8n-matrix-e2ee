@@ -8,11 +8,13 @@ repository = "https://github.com/spindle-studio/n8n-matrix-e2ee"
 [dependencies]
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
+dotenvy = "0.15.7"
 futures-util = "0.3"
 matrix-sdk = { version = "0.18", default-features = false, features = ["e2e-encryption", "sqlite"] }
 mime = "0.3"
 ogg = "0.9"
 opus-decoder = "0.1"
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 ruma = { version = "0.16", features = ["unstable-msc3245-v1-compat"] }
 serde = { version = "1", features = ["derive"] }

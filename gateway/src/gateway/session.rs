@@ -2,8 +2,13 @@ use std::path::{Path, PathBuf};
 
 use matrix_sdk::authentication::matrix::MatrixSession;
 
-pub(crate) const MATRIX_STORE_PATH: &str = "/data/matrix_store";
-pub(crate) const MATRIX_SESSION_PATH: &str = "/data/matrix_session.json";
+pub(crate) fn matrix_store_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("matrix_store")
+}
+
+pub(crate) fn matrix_session_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("matrix_session.json")
+}
 
 pub(crate) fn load_session(path: &Path) -> anyhow::Result<MatrixSession> {
     let serialized = std::fs::read_to_string(path)?;
@@ -37,9 +42,14 @@ mod tests {
 
     #[test]
     fn session_temporary_path_is_next_to_the_session_file() {
+        let session_path = matrix_session_path(Path::new("/data"));
         assert_eq!(
-            session_temporary_path(Path::new(MATRIX_SESSION_PATH)),
+            session_temporary_path(&session_path),
             Path::new("/data/matrix_session.json.tmp")
+        );
+        assert_eq!(
+            matrix_store_path(Path::new("./data")),
+            Path::new("./data/matrix_store")
         );
     }
 

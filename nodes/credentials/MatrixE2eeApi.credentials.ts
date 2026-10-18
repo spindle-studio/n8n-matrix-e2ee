@@ -22,7 +22,7 @@ export class MatrixE2eeApi implements ICredentialType {
 			displayName: 'Gateway Base URL',
 			name: 'baseUrl',
 			type: 'string',
-			default: 'http://n8n-matrix-e2ee-gateway.n8n.svc.cluster.local:8080',
+			default: 'http://n8n-matrix-e2ee-gateway:8080',
 			required: true,
 			placeholder: 'http://gateway:8080',
 			description: 'The HTTP URL of the Matrix E2EE gateway',

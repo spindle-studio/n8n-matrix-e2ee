@@ -2,8 +2,6 @@ pub(crate) mod device;
 pub(crate) mod session;
 pub(crate) mod sync;
 
-use std::path::Path;
-
 use matrix_sdk::Client;
 use tokio::sync::broadcast;
 use tracing::info;
@@ -18,12 +16,11 @@ pub(crate) struct AppState {
 }
 
 pub(crate) async fn initialize_gateway(config: &Config) -> anyhow::Result<AppState> {
-    std::fs::create_dir_all(session::MATRIX_STORE_PATH)?;
-    let session_path = Path::new(session::MATRIX_SESSION_PATH);
+    let store_path = session::matrix_store_path(&config.data_dir);
+    let session_path = session::matrix_session_path(&config.data_dir);
+    std::fs::create_dir_all(&store_path)?;
 
-    if !session_path.exists()
-        && session::store_contains_data(Path::new(session::MATRIX_STORE_PATH))?
-    {
+    if !session_path.exists() && session::store_contains_data(&store_path)? {
         anyhow::bail!(
             "Matrix store exists without its session file; remove the persisted gateway data once \
              to create a recoverable Matrix session"
@@ -32,12 +29,12 @@ pub(crate) async fn initialize_gateway(config: &Config) -> anyhow::Result<AppSta
 
     let client = Client::builder()
         .homeserver_url(&config.homeserver_url)
-        .sqlite_store(Path::new(session::MATRIX_STORE_PATH), None)
+        .sqlite_store(&store_path, None)
         .build()
         .await?;
 
     if session_path.exists() {
-        let session = session::load_session(session_path)?;
+        let session = session::load_session(&session_path)?;
 
         if session.meta.user_id.as_str() != config.matrix_user {
             anyhow::bail!(
@@ -56,7 +53,7 @@ pub(crate) async fn initialize_gateway(config: &Config) -> anyhow::Result<AppSta
             .initial_device_display_name("n8n Matrix E2EE gateway")
             .send()
             .await?;
-        session::persist_session(session_path, client.matrix_auth().session())?;
+        session::persist_session(&session_path, client.matrix_auth().session())?;
         info!(user = %config.matrix_user, "logged in to Matrix");
     }
 
