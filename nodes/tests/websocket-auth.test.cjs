@@ -199,6 +199,42 @@ test('invalid relates_to metadata is rejected without breaking subsequent events
 	assert.equal(emitted.length, 1);
 });
 
+test('reaction events are preserved and malformed reaction events are rejected', async (t) => {
+	const { socket, emitted } = await start(t);
+	socket.open();
+	socket.message({ type: 'authenticated' });
+
+	const reactionEvent = {
+		event_type: 'reaction',
+		room_id: '!room:example.org',
+		sender: '@sender:example.org',
+		event_id: '$reaction_event:example.org',
+		key: '👍',
+		relates_to: {
+			rel_type: 'annotation',
+			event_id: '$target:example.org',
+			key: '👍',
+		},
+	};
+	socket.message({ ...reactionEvent, future_field: true });
+	await delay(0);
+	assert.equal(emitted.length, 1);
+	assert.deepEqual(emitted[0][0][0].json, reactionEvent);
+	assert.equal(emitted[0][0][0].binary, undefined);
+
+	for (const invalidReaction of [
+		{ ...reactionEvent, key: '   ' },
+		{ ...reactionEvent, relates_to: undefined },
+		{ ...reactionEvent, relates_to: { rel_type: 'reply', event_id: '$target:example.org', key: '👍' } },
+		{ ...reactionEvent, relates_to: { rel_type: 'annotation', event_id: 'bad-id', key: '👍' } },
+		{ ...reactionEvent, relates_to: { rel_type: 'annotation', event_id: '$target:example.org', key: '❌' } },
+	]) {
+		socket.message(invalidReaction);
+	}
+	await delay(0);
+	assert.equal(emitted.length, 1);
+});
+
 test('formatted_body is preserved on text/notice/emote events and rejected on image/audio or when malformed', async (t) => {
 	const { socket, emitted } = await start(t);
 	socket.open();
@@ -709,5 +745,58 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 				}),
 			),
 		/Invalid Matrix event ID in Target Event/,
+	);
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'reaction',
+			roomId: '!room:example.org',
+			targetEventId: ' $target_message:example.org ',
+			reaction: '👍',
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/reaction',
+		body: {
+			room_id: '!room:example.org',
+			event_id: '$target_message:example.org',
+			key: '👍',
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'reaction',
+			roomId: '!room:example.org',
+			targetEventId: '$target_message:example.org',
+			reaction: 'custom',
+			customReaction: ' 🦊 ',
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/reaction',
+		body: {
+			room_id: '!room:example.org',
+			event_id: '$target_message:example.org',
+			key: '🦊',
+		},
+		json: true,
+	});
+
+	await assert.rejects(
+		() =>
+			MatrixE2ee.prototype.execute.call(
+				makeContext({
+					operation: 'reaction',
+					roomId: '!room:example.org',
+					targetEventId: '$target_message:example.org',
+					reaction: 'custom',
+					customReaction: '   ',
+				}),
+			),
+		/Custom Reaction must not be empty/,
 	);
 });

@@ -4,14 +4,20 @@ use futures_util::StreamExt;
 use matrix_sdk::{
     Client, Room, RoomState,
     ruma::{
-        OwnedUserId, events::room::member::StrippedRoomMemberEvent,
-        events::room::message::OriginalSyncRoomMessageEvent,
+        OwnedUserId,
+        events::{
+            reaction::OriginalSyncReactionEvent, room::member::StrippedRoomMemberEvent,
+            room::message::OriginalSyncRoomMessageEvent,
+        },
     },
 };
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
-use crate::api::{GatewayEvent, gateway_message_type_label, room_message_content_to_gateway_event};
+use crate::api::{
+    GatewayEvent, gateway_message_type_label, reaction_content_to_gateway_event,
+    room_message_content_to_gateway_event,
+};
 
 pub(crate) async fn run_sync_loop(client: Client, allowed_inviters: HashSet<String>) {
     let mut sync_stream = Box::pin(
@@ -80,6 +86,43 @@ pub(crate) fn register_event_handlers(
             }
 
             let Some(gateway_event) = room_message_content_to_gateway_event(
+                room.room_id().as_str(),
+                event.sender.as_str(),
+                event.event_id.as_str(),
+                &event.content,
+            ) else {
+                return;
+            };
+
+            broadcast_event(&events, gateway_event);
+        }
+    });
+
+    let reaction_events = events;
+    let reaction_own_user_id = own_user_id;
+    client.add_event_handler(move |event: OriginalSyncReactionEvent, room: Room| {
+        let events = reaction_events.clone();
+        let own_user_id = reaction_own_user_id.clone();
+        async move {
+            info!(
+                room_id = %room.room_id(),
+                sender = %event.sender,
+                event_id = %event.event_id,
+                target_event_id = %event.content.relates_to.event_id,
+                "received Matrix reaction metadata"
+            );
+
+            if is_self_authored_message(&event.sender, own_user_id.as_ref()) {
+                info!(
+                    room_id = %room.room_id(),
+                    sender = %event.sender,
+                    event_id = %event.event_id,
+                    "ignoring self-authored Matrix reaction"
+                );
+                return;
+            }
+
+            let Some(gateway_event) = reaction_content_to_gateway_event(
                 room.room_id().as_str(),
                 event.sender.as_str(),
                 event.event_id.as_str(),

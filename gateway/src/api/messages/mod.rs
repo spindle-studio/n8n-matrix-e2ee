@@ -3,6 +3,7 @@ mod emote;
 mod event;
 mod image;
 mod notice;
+mod reaction;
 mod text;
 
 use std::io::Cursor;
@@ -30,7 +31,8 @@ use crate::{
 };
 
 pub(crate) use event::{
-    GatewayEvent, gateway_message_type_label, room_message_content_to_gateway_event,
+    GatewayEvent, gateway_message_type_label, reaction_content_to_gateway_event,
+    room_message_content_to_gateway_event,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -310,6 +312,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/emote", post(emote::send_emote))
         .route("/image", post(image::send_image))
         .route("/audio", post(audio::send_audio))
+        .route("/reaction", post(reaction::send_reaction))
 }
 
 fn message_action_response(
