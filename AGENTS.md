@@ -109,7 +109,8 @@ The API is intentionally private: expose it only to trusted n8n workloads.
 | --- | --- |
 | `GET /healthz` | Returns `200` after initialization |
 | `GET /v1/auth-check` | Returns `204` for a valid bearer token |
-| `POST /v1/messages/text` | Sends `{"room_id":"...","body":"..."}` (converts Markdown to plain-text `body` and HTML `formatted_body`) |
+| `POST /v1/messages/text` | Sends `{"room_id":"...","body":"..."}` as `m.text` (converts Markdown to plain-text `body` and HTML `formatted_body`) |
+| `POST /v1/messages/notice` | Sends `{"room_id":"...","body":"..."}` as `m.notice` (converts Markdown to plain-text `body` and HTML `formatted_body` without triggering notifications) |
 | `POST /v1/messages/image` | Sends raw image bytes; query parameters supply room ID, file name, and optional `body` |
 | `POST /v1/messages/audio` | Sends raw Ogg/Opus bytes as a stable `m.audio` message with optional `body` |
 | `POST /v1/typing` | Sets `{"room_id":"...","typing":true|false,"timeout_seconds":30}` (`timeout_seconds` optional when `typing: true`) |
@@ -125,8 +126,8 @@ WebSocket connections. Incoming frames/messages are limited to 4 KiB and at most
 response and authenticate again after reconnecting. Use WSS outside trusted
 networks; never log authentication payloads. HTTP authentication is unchanged.
 
-The WebSocket stream provides text, image, and audio events. All include
-`room_id`, `sender`, `event_id`, `body`, and `message_type`; text events include
+The WebSocket stream provides text, notice, image, and audio events. All include
+`room_id`, `sender`, `event_id`, `body`, and `message_type`; text and notice events include
 `formatted_body` when Matrix supplies `org.matrix.custom.html` formatting, and
 media events can also include file, MIME, size, image-dimension, and duration
 metadata. When Matrix supplies `m.mentions`, events also include a `mentions`
@@ -139,7 +140,7 @@ object:
 `user_ids` contains the mentioned Matrix IDs (unique and sorted); `room` indicates
 an `@room` mention. Both fields are present when `mentions` is present, defaulting
 to `[]` and `false`. Missing Matrix metadata omits `mentions` entirely, preserving
-the distinction from an explicitly empty mentions object. Text, image, and audio
+the distinction from an explicitly empty mentions object. Text, notice, image, and audio
 messages use the same format. Mentions are never inferred from message text.
 This is sender-provided metadata, not proof of notification delivery or permission
 to notify the room. The n8n trigger preserves this optional object in its JSON output. Events from

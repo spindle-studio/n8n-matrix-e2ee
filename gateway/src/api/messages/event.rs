@@ -7,8 +7,20 @@ use serde::Serialize;
 #[serde(rename_all = "snake_case")]
 pub(crate) enum GatewayMessageType {
     Text,
+    Notice,
     Image,
     Audio,
+}
+
+impl GatewayMessageType {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Notice => "notice",
+            Self::Image => "image",
+            Self::Audio => "audio",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -49,7 +61,9 @@ pub(crate) enum GatewayEvent {
 pub(crate) fn gateway_message_type_label(message_type: &MessageType) -> &'static str {
     match message_type {
         MessageType::Text(_) => "text",
+        MessageType::Notice(_) => "notice",
         MessageType::Image(_) => "image",
+        MessageType::Audio(_) => "audio",
         _ => "other",
     }
 }
@@ -79,6 +93,25 @@ pub(crate) fn room_message_content_to_gateway_event(
                 .map(|formatted| formatted.body.clone()),
             event_id: event_id.to_owned(),
             message_type: GatewayMessageType::Text,
+            mentions,
+            file_name: None,
+            mime_type: None,
+            size_bytes: None,
+            width: None,
+            height: None,
+            duration_seconds: None,
+        }),
+        MessageType::Notice(content) => Some(GatewayEvent::Message {
+            room_id: room_id.to_owned(),
+            sender: sender.to_owned(),
+            body: content.body.clone(),
+            formatted_body: content
+                .formatted
+                .as_ref()
+                .filter(|formatted| formatted.format == MessageFormat::Html)
+                .map(|formatted| formatted.body.clone()),
+            event_id: event_id.to_owned(),
+            message_type: GatewayMessageType::Notice,
             mentions,
             file_name: None,
             mime_type: None,
@@ -193,28 +226,38 @@ mod tests {
     }
 
     #[test]
-    fn text_gateway_events_include_html_formatted_body_only_for_text() {
-        let message = RoomMessageEventContent::text_html("Hello world", "<p>Hello <b>world</b></p>");
-        let event = room_message_content_to_gateway_event(
-            "!room:example.org",
-            "@sender:example.org",
-            "$html",
-            &message,
-        )
-        .unwrap();
+    fn text_and_notice_gateway_events_include_html_formatted_body() {
+        for (message, expected_type) in [
+            (
+                RoomMessageEventContent::text_html("Hello world", "<p>Hello <b>world</b></p>"),
+                "text",
+            ),
+            (
+                RoomMessageEventContent::notice_html("Hello world", "<p>Hello <b>world</b></p>"),
+                "notice",
+            ),
+        ] {
+            let event = room_message_content_to_gateway_event(
+                "!room:example.org",
+                "@sender:example.org",
+                "$html",
+                &message,
+            )
+            .unwrap();
 
-        assert_eq!(
-            serde_json::to_value(event).unwrap(),
-            serde_json::json!({
-                "event_type": "room.message",
-                "room_id": "!room:example.org",
-                "sender": "@sender:example.org",
-                "body": "Hello world",
-                "formatted_body": "<p>Hello <b>world</b></p>",
-                "event_id": "$html",
-                "message_type": "text"
-            })
-        );
+            assert_eq!(
+                serde_json::to_value(event).unwrap(),
+                serde_json::json!({
+                    "event_type": "room.message",
+                    "room_id": "!room:example.org",
+                    "sender": "@sender:example.org",
+                    "body": "Hello world",
+                    "formatted_body": "<p>Hello <b>world</b></p>",
+                    "event_id": "$html",
+                    "message_type": expected_type
+                })
+            );
+        }
     }
 
     #[test]
@@ -306,7 +349,7 @@ mod tests {
     }
     #[test]
     fn forwards_structured_mentions_for_all_supported_message_types() {
-        for msgtype in ["m.text", "m.image", "m.audio"] {
+        for msgtype in ["m.text", "m.notice", "m.image", "m.audio"] {
             for (metadata, expected) in [
                 (
                     serde_json::json!({}),
@@ -348,7 +391,7 @@ mod tests {
 
     #[test]
     fn does_not_infer_mentions_from_body_or_formatted_text() {
-        for msgtype in ["m.text", "m.image", "m.audio"] {
+        for msgtype in ["m.text", "m.notice", "m.image", "m.audio"] {
             let content: RoomMessageEventContent = serde_json::from_value(serde_json::json!({
                 "msgtype": msgtype,
                 "body": "@room @ben:example.org",

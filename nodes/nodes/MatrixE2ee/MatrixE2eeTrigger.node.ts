@@ -13,7 +13,7 @@ const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const AUTH_TIMEOUT_MS = 10_000;
 
-type MatrixE2eeMessageType = 'text' | 'image' | 'audio';
+type MatrixE2eeMessageType = 'text' | 'notice' | 'image' | 'audio';
 
 interface MatrixE2eeMentions extends IDataObject {
 	user_ids: string[];
@@ -103,14 +103,17 @@ function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined
 	if (
 		messageType !== undefined &&
 		messageType !== 'text' &&
+		messageType !== 'notice' &&
 		messageType !== 'image' &&
 		messageType !== 'audio'
 	) {
 		return undefined;
 	}
 	const normalizedMessageType: MatrixE2eeMessageType =
-		messageType === 'image' || messageType === 'audio' ? messageType : 'text';
-	if (normalizedMessageType === 'text') {
+		messageType === 'notice' || messageType === 'image' || messageType === 'audio'
+			? messageType
+			: 'text';
+	if (normalizedMessageType === 'text' || normalizedMessageType === 'notice') {
 		if (!isOptionalString(event.formatted_body)) {
 			return undefined;
 		}
