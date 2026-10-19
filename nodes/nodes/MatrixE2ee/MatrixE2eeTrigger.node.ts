@@ -26,7 +26,13 @@ interface MatrixE2eeRelatesTo extends IDataObject {
 	event_id: string;
 }
 
-interface MatrixE2eeEvent extends IDataObject {
+interface MatrixE2eeReactionRelatesTo extends IDataObject {
+	rel_type: 'annotation';
+	event_id: string;
+	key: string;
+}
+
+interface MatrixE2eeMessageEvent extends IDataObject {
 	event_type: 'room.message';
 	room_id: string;
 	sender: string;
@@ -43,6 +49,17 @@ interface MatrixE2eeEvent extends IDataObject {
 	height?: number;
 	duration_seconds?: number;
 }
+
+interface MatrixE2eeReactionEvent extends IDataObject {
+	event_type: 'reaction';
+	room_id: string;
+	sender: string;
+	event_id: string;
+	key: string;
+	relates_to: MatrixE2eeReactionRelatesTo;
+}
+
+type MatrixE2eeEvent = MatrixE2eeMessageEvent | MatrixE2eeReactionEvent;
 
 export function getGatewayWebSocketUrl(baseUrl: string): string {
 	const parsedUrl = new URL(baseUrl.trim());
@@ -92,6 +109,15 @@ function isMentions(value: unknown): value is MatrixE2eeMentions {
 	);
 }
 
+function isValidEventId(value: unknown): value is string {
+	return (
+		typeof value === 'string' &&
+		value.startsWith('$') &&
+		value.length > 1 &&
+		!/\s/.test(value)
+	);
+}
+
 function isRelatesTo(value: unknown): value is MatrixE2eeRelatesTo {
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		return false;
@@ -101,10 +127,19 @@ function isRelatesTo(value: unknown): value is MatrixE2eeRelatesTo {
 		(relatesTo.rel_type === 'thread' ||
 			relatesTo.rel_type === 'reply' ||
 			relatesTo.rel_type === 'edit') &&
-		typeof relatesTo.event_id === 'string' &&
-		relatesTo.event_id.startsWith('$') &&
-		relatesTo.event_id.length > 1 &&
-		!/\s/.test(relatesTo.event_id)
+		isValidEventId(relatesTo.event_id)
+	);
+}
+
+function isReactionRelatesTo(value: unknown): value is MatrixE2eeReactionRelatesTo {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+		return false;
+	}
+	const relatesTo = value as Record<string, unknown>;
+	return (
+		relatesTo.rel_type === 'annotation' &&
+		isValidEventId(relatesTo.event_id) &&
+		isNonEmptyString(relatesTo.key)
 	);
 }
 
@@ -114,6 +149,29 @@ function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined
 	}
 
 	const event = payload as Record<string, unknown>;
+
+	if (event.event_type === 'reaction') {
+		if (
+			!['room_id', 'sender', 'event_id', 'key'].every((field) => isNonEmptyString(event[field])) ||
+			!isReactionRelatesTo(event.relates_to) ||
+			event.relates_to.key !== event.key
+		) {
+			return undefined;
+		}
+
+		return {
+			event_type: 'reaction',
+			room_id: event.room_id as string,
+			sender: event.sender as string,
+			event_id: event.event_id as string,
+			key: event.key as string,
+			relates_to: {
+				rel_type: 'annotation',
+				event_id: event.relates_to.event_id,
+				key: event.relates_to.key,
+			},
+		};
+	}
 
 	if (
 		event.event_type !== 'room.message' ||
@@ -229,7 +287,7 @@ async function downloadGatewayMedia(
 	this: ITriggerFunctions,
 	baseUrl: string,
 	apiToken: string,
-	event: MatrixE2eeEvent,
+	event: MatrixE2eeMessageEvent,
 ): Promise<IBinaryData> {
 	// Push-trigger callbacks run outside n8n's credential expression context.
 	// The token was resolved and validated during activation, so use it directly.
@@ -272,7 +330,11 @@ async function buildExecutionData(
 		json: { ...event },
 	};
 
-	if ((event.message_type === 'image' || event.message_type === 'audio') && downloadMedia) {
+	if (
+		event.event_type === 'room.message' &&
+		(event.message_type === 'image' || event.message_type === 'audio') &&
+		downloadMedia
+	) {
 		item.binary = {
 			[binaryPropertyName]: await downloadGatewayMedia.call(this, baseUrl, apiToken, event),
 		};

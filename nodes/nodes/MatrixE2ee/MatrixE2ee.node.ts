@@ -4,10 +4,39 @@ import type {
 	IExecuteFunctions,
 	INodeExecutionData,
 	INodeProperties,
+	INodePropertyOptions,
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
 import { NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
+
+export const reactionEmojiOptions: INodePropertyOptions[] = [
+	// Task Status
+	{ name: '✅ Success', value: '✅' },
+	{ name: '❌ Error', value: '❌' },
+	{ name: '⚠️ Warning', value: '⚠️' },
+	{ name: '⏳ Processing', value: '⏳' },
+
+	// AI & Bot State
+	{ name: '🤖 AI Generated', value: '🤖' },
+	{ name: '👀 In Review', value: '👀' },
+	{ name: '💡 Insight', value: '💡' },
+
+	// Approval & Interaction
+	{ name: '👍 Approve', value: '👍' },
+	{ name: '👎 Reject', value: '👎' },
+	{ name: '🚀 Deployed', value: '🚀' },
+	{ name: '❓ Pending Input', value: '❓' },
+
+	// General Reactions
+	{ name: '🎉 Party', value: '🎉' },
+	{ name: '❤️ Favorite', value: '❤️' },
+	{ name: '🔥 Fire', value: '🔥' },
+	{ name: '🙏 Thanks', value: '🙏' },
+
+	// Custom Fallback
+	{ name: '✏️ Custom Reaction...', value: 'custom' },
+];
 
 export const messageRelationshipProperties: INodeProperties[] = [
 	{
@@ -115,6 +144,10 @@ export function getGatewaySendImageUrl(baseUrl: string): string {
 
 export function getGatewaySendAudioUrl(baseUrl: string): string {
 	return getGatewayApiUrl(baseUrl, '/v1/messages/audio');
+}
+
+export function getGatewaySendReactionUrl(baseUrl: string): string {
+	return getGatewayApiUrl(baseUrl, '/v1/messages/reaction');
 }
 
 export function getGatewayTypingUrl(baseUrl: string): string {
@@ -344,7 +377,7 @@ export class MatrixE2ee implements INodeType {
 		group: ['output'],
 		version: [1],
 		subtitle:
-			'={{$parameter["operation"] === "typingIndicator" ? "Set typing indicator" : $parameter["operation"] === "editMessage" ? ($parameter["messageType"] === "notice" ? "Edit notice" : $parameter["messageType"] === "emote" ? "Edit emote" : "Edit message") : $parameter["messageType"] === "notice" ? "Send notice" : $parameter["messageType"] === "emote" ? "Send emote" : $parameter["messageType"] === "image" ? "Send image" : $parameter["messageType"] === "audio" ? "Send audio" : "Send message"}}',
+			'={{$parameter["operation"] === "typingIndicator" ? "Set typing indicator" : $parameter["operation"] === "reaction" ? "Send reaction" : $parameter["operation"] === "editMessage" ? ($parameter["messageType"] === "notice" ? "Edit notice" : $parameter["messageType"] === "emote" ? "Edit emote" : "Edit message") : $parameter["messageType"] === "notice" ? "Send notice" : $parameter["messageType"] === "emote" ? "Send emote" : $parameter["messageType"] === "image" ? "Send image" : $parameter["messageType"] === "audio" ? "Send audio" : "Send message"}}',
 		description: 'Send and receive encrypted Matrix messages',
 		defaults: {
 			name: 'Matrix E2EE',
@@ -378,6 +411,12 @@ export class MatrixE2ee implements INodeType {
 						description: 'Send text, notice, emote, image, or audio',
 					},
 					{
+						name: 'Send Reaction',
+						value: 'reaction',
+						action: 'Send a reaction',
+						description: 'React to an existing message with an emoji',
+					},
+					{
 						name: 'Typing Indicator',
 						value: 'typingIndicator',
 						action: 'Show or hide typing status in a room',
@@ -404,10 +443,38 @@ export class MatrixE2ee implements INodeType {
 				placeholder: '$abc123xyz...',
 				displayOptions: {
 					show: {
-						operation: ['editMessage'],
+						operation: ['editMessage', 'reaction'],
 					},
 				},
-				description: 'The Matrix $event_id of the existing message to edit',
+				description: 'The Matrix $event_id of the existing message to edit or react to',
+			},
+			{
+				displayName: 'Reaction',
+				name: 'reaction',
+				type: 'options',
+				required: true,
+				displayOptions: {
+					show: {
+						operation: ['reaction'],
+					},
+				},
+				options: reactionEmojiOptions,
+				default: '✅',
+				description: 'The emoji reaction to add to the target message',
+			},
+			{
+				displayName: 'Custom Reaction',
+				name: 'customReaction',
+				type: 'string',
+				required: true,
+				default: '',
+				displayOptions: {
+					show: {
+						operation: ['reaction'],
+						reaction: ['custom'],
+					},
+				},
+				description: 'The Unicode emoji or short text to react with',
 			},
 			{
 				displayName: 'Message Type',
@@ -828,6 +895,50 @@ export class MatrixE2ee implements INodeType {
 											? getGatewaySendEmoteUrl(baseUrl)
 											: getGatewaySendTextUrl(baseUrl),
 								body: requestBody,
+								json: true,
+							},
+						);
+						break;
+					}
+					case 'reaction': {
+						const targetEventId = resolveValidatedEventId.call(
+							this,
+							this.getNodeParameter('targetEventId', itemIndex),
+							'Target Event',
+							itemIndex,
+						);
+						const selectedReaction = this.getNodeParameter('reaction', itemIndex) as unknown;
+						if (typeof selectedReaction !== 'string') {
+							throw new NodeOperationError(this.getNode(), 'Reaction must be a string.', {
+								itemIndex,
+							});
+						}
+						const rawKey =
+							selectedReaction === 'custom'
+								? this.getNodeParameter('customReaction', itemIndex)
+								: selectedReaction;
+						if (typeof rawKey !== 'string' || rawKey.trim().length === 0) {
+							throw new NodeOperationError(
+								this.getNode(),
+								selectedReaction === 'custom'
+									? 'Custom Reaction must not be empty.'
+									: 'Reaction must not be empty.',
+								{ itemIndex },
+							);
+						}
+						const key = rawKey.trim();
+
+						responseData = await this.helpers.httpRequestWithAuthentication.call(
+							this,
+							'matrixE2eeApi',
+							{
+								method: 'POST',
+								url: getGatewaySendReactionUrl(baseUrl),
+								body: {
+									room_id: roomId,
+									event_id: targetEventId,
+									key,
+								},
 								json: true,
 							},
 						);

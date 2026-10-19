@@ -1,9 +1,19 @@
-use matrix_sdk::ruma::events::room::message::{
-    ImageMessageEventContent, MessageFormat, MessageType, Relation, RoomMessageEventContent,
+use matrix_sdk::ruma::events::{
+    reaction::ReactionEventContent,
+    room::message::{
+        ImageMessageEventContent, MessageFormat, MessageType, Relation, RoomMessageEventContent,
+    },
 };
 use serde::Serialize;
 
 use super::RelatesTo;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ReactionRelatesTo {
+    rel_type: &'static str,
+    event_id: String,
+    key: String,
+}
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,6 +72,39 @@ pub(crate) enum GatewayEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         duration_seconds: Option<u64>,
     },
+    #[serde(rename = "reaction")]
+    Reaction {
+        room_id: String,
+        sender: String,
+        event_id: String,
+        key: String,
+        relates_to: ReactionRelatesTo,
+    },
+}
+
+pub(crate) fn reaction_content_to_gateway_event(
+    room_id: &str,
+    sender: &str,
+    event_id: &str,
+    reaction_event: &ReactionEventContent,
+) -> Option<GatewayEvent> {
+    let key = reaction_event.relates_to.key.trim();
+    if key.is_empty() {
+        return None;
+    }
+
+    let target_event_id = reaction_event.relates_to.event_id.to_string();
+    Some(GatewayEvent::Reaction {
+        room_id: room_id.to_owned(),
+        sender: sender.to_owned(),
+        event_id: event_id.to_owned(),
+        key: key.to_owned(),
+        relates_to: ReactionRelatesTo {
+            rel_type: "annotation",
+            event_id: target_event_id,
+            key: key.to_owned(),
+        },
+    })
 }
 
 pub(crate) fn gateway_message_type_label(message_type: &MessageType) -> &'static str {
@@ -596,5 +639,57 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn forwards_reaction_events_and_ignores_empty_keys() {
+        let content: ReactionEventContent = serde_json::from_value(serde_json::json!({
+            "m.relates_to": {
+                "rel_type": "m.annotation",
+                "event_id": "$target:example.org",
+                "key": "👍"
+            }
+        }))
+        .unwrap();
+        let event = reaction_content_to_gateway_event(
+            "!room:example.org",
+            "@sender:example.org",
+            "$reaction_event",
+            &content,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::json!({
+                "event_type": "reaction",
+                "room_id": "!room:example.org",
+                "sender": "@sender:example.org",
+                "event_id": "$reaction_event",
+                "key": "👍",
+                "relates_to": {
+                    "rel_type": "annotation",
+                    "event_id": "$target:example.org",
+                    "key": "👍"
+                }
+            })
+        );
+
+        let empty_content: ReactionEventContent = serde_json::from_value(serde_json::json!({
+            "m.relates_to": {
+                "rel_type": "m.annotation",
+                "event_id": "$target:example.org",
+                "key": "   "
+            }
+        }))
+        .unwrap();
+        assert!(
+            reaction_content_to_gateway_event(
+                "!room:example.org",
+                "@sender:example.org",
+                "$reaction_event",
+                &empty_content,
+            )
+            .is_none()
+        );
     }
 }
