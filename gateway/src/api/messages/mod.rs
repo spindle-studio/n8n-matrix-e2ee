@@ -1,6 +1,7 @@
 mod audio;
 mod event;
 mod image;
+mod notice;
 mod text;
 
 use axum::{Json, Router, routing::post};
@@ -22,6 +23,7 @@ pub(crate) struct MessageActionResponse {
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/text", post(text::send_text))
+        .route("/notice", post(notice::send_notice))
         .route("/image", post(image::send_image))
         .route("/audio", post(audio::send_audio))
 }

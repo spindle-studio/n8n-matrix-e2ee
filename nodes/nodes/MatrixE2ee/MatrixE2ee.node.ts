@@ -16,6 +16,10 @@ export function getGatewaySendTextUrl(baseUrl: string): string {
 	return getGatewayApiUrl(baseUrl, '/v1/messages/text');
 }
 
+export function getGatewaySendNoticeUrl(baseUrl: string): string {
+	return getGatewayApiUrl(baseUrl, '/v1/messages/notice');
+}
+
 export function getGatewaySendImageUrl(baseUrl: string): string {
 	return getGatewayApiUrl(baseUrl, '/v1/messages/image');
 }
@@ -71,7 +75,7 @@ export class MatrixE2ee implements INodeType {
 		group: ['output'],
 		version: [1],
 		subtitle:
-			'={{$parameter["operation"] === "typingIndicator" ? "Set typing indicator" : $parameter["messageType"] === "image" ? "Send image" : $parameter["messageType"] === "audio" ? "Send audio" : "Send message"}}',
+			'={{$parameter["operation"] === "typingIndicator" ? "Set typing indicator" : $parameter["messageType"] === "notice" ? "Send notice" : $parameter["messageType"] === "image" ? "Send image" : $parameter["messageType"] === "audio" ? "Send audio" : "Send message"}}',
 		description: 'Send and receive encrypted Matrix messages',
 		defaults: {
 			name: 'Matrix E2EE',
@@ -96,7 +100,7 @@ export class MatrixE2ee implements INodeType {
 						name: 'Send Message',
 						value: 'message',
 						action: 'Send a message',
-						description: 'Send text, image, or audio',
+						description: 'Send text, notice, image, or audio',
 					},
 					{
 						name: 'Typing Indicator',
@@ -133,6 +137,12 @@ export class MatrixE2ee implements INodeType {
 						description: 'Send a text message with full Markdown support',
 					},
 					{
+						name: 'Notice',
+						value: 'notice',
+						description:
+							'Send a silent notice message with full Markdown support without triggering notifications',
+					},
+					{
 						name: 'Image',
 						value: 'image',
 						description: 'Send an image from incoming binary data',
@@ -158,7 +168,7 @@ export class MatrixE2ee implements INodeType {
 				displayOptions: {
 					show: {
 						operation: ['message'],
-						messageType: ['text'],
+						messageType: ['text', 'notice'],
 					},
 				},
 				description: 'The message to send (supports Markdown)',
@@ -224,7 +234,7 @@ export class MatrixE2ee implements INodeType {
 				description: 'Whether the gateway bot should start or stop typing in the room',
 			},
 			{
-				displayName: 'Timeout / Duration',
+				displayName: 'Timeout',
 				name: 'timeoutSeconds',
 				type: 'number',
 				required: true,
@@ -271,7 +281,8 @@ export class MatrixE2ee implements INodeType {
 						const messageType = this.getNodeParameter('messageType', itemIndex) as string;
 
 						switch (messageType) {
-							case 'text': {
+							case 'text':
+							case 'notice': {
 								const message = this.getNodeParameter('message', itemIndex) as string;
 
 								if (message.trim().length === 0) {
@@ -285,7 +296,10 @@ export class MatrixE2ee implements INodeType {
 									'matrixE2eeApi',
 									{
 										method: 'POST',
-										url: getGatewaySendTextUrl(baseUrl),
+										url:
+											messageType === 'notice'
+												? getGatewaySendNoticeUrl(baseUrl)
+												: getGatewaySendTextUrl(baseUrl),
 										body: {
 											room_id: roomId,
 											body: message,
@@ -411,7 +425,7 @@ export class MatrixE2ee implements INodeType {
 							) {
 								throw new NodeOperationError(
 									this.getNode(),
-									'Timeout / Duration must be a number greater than 0.',
+									'Timeout must be a number greater than 0.',
 									{ itemIndex },
 								);
 							}

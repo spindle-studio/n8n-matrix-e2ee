@@ -14,7 +14,7 @@ use crate::api::{
 };
 
 #[derive(Debug, Deserialize)]
-pub(super) struct SendTextRequest {
+pub(super) struct SendMarkdownRequest {
     room_id: String,
     body: String,
 }
@@ -22,15 +22,28 @@ pub(super) struct SendTextRequest {
 pub(super) async fn send_text(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(request): Json<SendTextRequest>,
+    Json(request): Json<SendMarkdownRequest>,
+) -> ApiResult<Json<MessageActionResponse>> {
+    send_markdown_message(state, headers, request, GatewayMessageType::Text).await
+}
+
+pub(super) async fn send_markdown_message(
+    state: AppState,
+    headers: HeaderMap,
+    request: SendMarkdownRequest,
+    gateway_message_type: GatewayMessageType,
 ) -> ApiResult<Json<MessageActionResponse>> {
     authorize_request(&state.api_secret_token, &headers)?;
-    let content = build_text_message_content(&request.body)
+    let content = build_markdown_message_content(&request.body, gateway_message_type)
         .ok_or_else(|| client_error("body must not be empty"))?;
 
     let room_id = parse_room_id(&request.room_id)?;
     let room = get_known_room(&state.client, &room_id)?;
-    info!(room_id = %room_id, message_type = "text", "sending Matrix message");
+    info!(
+        room_id = %room_id,
+        message_type = gateway_message_type.as_str(),
+        "sending Matrix message"
+    );
     let response = room.send(content).await.map_err(|error| {
         error!(%error, room_id = %room_id, "failed to send Matrix message");
         server_error("failed to send Matrix message")
@@ -39,11 +52,29 @@ pub(super) async fn send_text(
     Ok(message_action_response(
         room_id.to_string(),
         response.response.event_id.to_string(),
-        GatewayMessageType::Text,
+        gateway_message_type,
     ))
 }
 
-fn build_text_message_content(markdown: &str) -> Option<RoomMessageEventContent> {
+pub(super) fn build_markdown_message_content(
+    markdown: &str,
+    gateway_message_type: GatewayMessageType,
+) -> Option<RoomMessageEventContent> {
+    let (plain_body, formatted_body) = compile_markdown(markdown)?;
+    match gateway_message_type {
+        GatewayMessageType::Text => Some(RoomMessageEventContent::text_html(
+            plain_body,
+            formatted_body,
+        )),
+        GatewayMessageType::Notice => Some(RoomMessageEventContent::notice_html(
+            plain_body,
+            formatted_body,
+        )),
+        GatewayMessageType::Image | GatewayMessageType::Audio => None,
+    }
+}
+
+fn compile_markdown(markdown: &str) -> Option<(String, String)> {
     if markdown.trim().is_empty() {
         return None;
     }
@@ -82,10 +113,7 @@ fn build_text_message_content(markdown: &str) -> Option<RoomMessageEventContent>
     html::push_html(&mut formatted_body, events.into_iter());
     let formatted_body = formatted_body.trim().to_owned();
 
-    Some(RoomMessageEventContent::text_html(
-        plain_body,
-        formatted_body,
-    ))
+    Some((plain_body, formatted_body))
 }
 
 #[cfg(test)]
@@ -94,7 +122,9 @@ mod tests {
 
     #[test]
     fn converts_markdown_to_plain_body_and_html_formatted_body() {
-        let content = build_text_message_content("Hello **world** and `code`!").unwrap();
+        let content =
+            build_markdown_message_content("Hello **world** and `code`!", GatewayMessageType::Text)
+                .unwrap();
         let json = serde_json::to_value(content).unwrap();
 
         assert_eq!(
@@ -110,7 +140,8 @@ mod tests {
 
     #[test]
     fn converts_plain_text_to_body_and_html_formatted_body() {
-        let content = build_text_message_content("Hello Matrix").unwrap();
+        let content =
+            build_markdown_message_content("Hello Matrix", GatewayMessageType::Text).unwrap();
         let json = serde_json::to_value(content).unwrap();
 
         assert_eq!(
@@ -126,7 +157,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_or_whitespace_only_body() {
-        assert!(build_text_message_content("").is_none());
-        assert!(build_text_message_content("   \n\t  ").is_none());
+        assert!(build_markdown_message_content("", GatewayMessageType::Text).is_none());
+        assert!(build_markdown_message_content("   \n\t  ", GatewayMessageType::Text).is_none());
     }
 }
