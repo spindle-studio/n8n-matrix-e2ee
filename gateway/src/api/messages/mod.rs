@@ -4,19 +4,169 @@ mod image;
 mod notice;
 mod text;
 
+use std::io::Cursor;
+
 use axum::{Json, Router, body::Bytes, extract::Multipart, routing::post};
-use matrix_sdk::ruma::{OwnedUserId, events::Mentions};
+use matrix_sdk::{
+    Room,
+    ruma::{
+        OwnedEventId, OwnedUserId,
+        events::{
+            AnyMessageLikeEventContent, Mentions,
+            room::MediaSource,
+        },
+        serde::Raw,
+    },
+};
 use mime::Mime;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use tracing::error;
 
 use crate::{
-    api::error::{ApiResult, client_error},
+    api::error::{ApiResult, client_error, server_error},
     gateway::AppState,
 };
 
 pub(crate) use event::{
     GatewayEvent, gateway_message_type_label, room_message_content_to_gateway_event,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "rel_type", rename_all = "snake_case")]
+pub(crate) enum RelatesTo {
+    /// Matrix Threading (m.thread)
+    Thread { event_id: String },
+    /// Inline reply (m.in_reply_to)
+    Reply { event_id: String },
+    /// Message replacement (m.replace)
+    Edit { event_id: String },
+}
+
+impl RelatesTo {
+    pub(crate) fn to_matrix_json(&self) -> serde_json::Value {
+        match self {
+            Self::Thread { event_id } => {
+                json!({
+                    "m.relates_to": {
+                        "rel_type": "m.thread",
+                        "event_id": event_id,
+                        "m.in_reply_to": {
+                            "event_id": event_id
+                        }
+                    }
+                })
+            }
+            Self::Reply { event_id } => {
+                json!({
+                    "m.relates_to": {
+                        "m.in_reply_to": {
+                            "event_id": event_id
+                        }
+                    }
+                })
+            }
+            Self::Edit { event_id } => {
+                json!({
+                    "m.relates_to": {
+                        "rel_type": "m.replace",
+                        "event_id": event_id
+                    }
+                })
+            }
+        }
+    }
+
+    fn validated(self) -> ApiResult<Self> {
+        match self {
+            Self::Thread { event_id } => Ok(Self::Thread {
+                event_id: parse_relates_to_event_id(&event_id)?.to_string(),
+            }),
+            Self::Reply { event_id } => Ok(Self::Reply {
+                event_id: parse_relates_to_event_id(&event_id)?.to_string(),
+            }),
+            Self::Edit { event_id } => Ok(Self::Edit {
+                event_id: parse_relates_to_event_id(&event_id)?.to_string(),
+            }),
+        }
+    }
+}
+
+pub(super) fn resolve_relates_to(request: Option<RelatesTo>) -> ApiResult<Option<RelatesTo>> {
+    request.map(RelatesTo::validated).transpose()
+}
+
+pub(super) fn resolve_media_relates_to(request: Option<RelatesTo>) -> ApiResult<Option<RelatesTo>> {
+    let relates_to = resolve_relates_to(request)?;
+    if matches!(relates_to, Some(RelatesTo::Edit { .. })) {
+        return Err(client_error(
+            "edit relationship is only supported for text and notice messages",
+        ));
+    }
+    Ok(relates_to)
+}
+
+fn parse_relates_to_event_id(event_id: &str) -> ApiResult<OwnedEventId> {
+    let trimmed = event_id.trim();
+    if trimmed.is_empty() {
+        return Err(client_error("relates_to.event_id must not be empty"));
+    }
+
+    trimmed
+        .parse()
+        .map_err(|_| client_error("relates_to.event_id must be a valid Matrix event ID"))
+}
+
+pub(super) fn inject_relates_to_value(
+    mut content: serde_json::Value,
+    relates_to: Option<&RelatesTo>,
+) -> serde_json::Value {
+    if let Some(relates_to) = relates_to
+        && let Some(obj) = content.as_object_mut()
+        && let Some(rel_obj) = relates_to.to_matrix_json().get("m.relates_to")
+    {
+        obj.insert("m.relates_to".to_owned(), rel_obj.clone());
+    }
+    content
+}
+
+pub(super) fn into_raw_room_message_content(
+    content: &serde_json::Value,
+) -> ApiResult<Raw<AnyMessageLikeEventContent>> {
+    serde_json::from_value(content.clone())
+        .map_err(|_| server_error("failed to serialize Matrix message content"))
+}
+
+pub(super) async fn upload_room_media(
+    client: &matrix_sdk::Client,
+    room: &Room,
+    content_type: &Mime,
+    data: Vec<u8>,
+    upload_error_message: &'static str,
+) -> ApiResult<MediaSource> {
+    if room
+        .latest_encryption_state()
+        .await
+        .map_err(|error| {
+            error!(%error, room_id = %room.room_id(), "failed to inspect Matrix room encryption state");
+            server_error("failed to inspect Matrix room encryption state")
+        })?
+        .is_encrypted()
+    {
+        let mut reader = Cursor::new(data);
+        let encrypted = client.upload_encrypted_file(&mut reader).await.map_err(|error| {
+            error!(%error, room_id = %room.room_id(), "failed to upload encrypted Matrix media");
+            server_error(upload_error_message)
+        })?;
+        Ok(MediaSource::Encrypted(Box::new(encrypted)))
+    } else {
+        let upload = client.media().upload(content_type, data, None).await.map_err(|error| {
+            error!(%error, room_id = %room.room_id(), "failed to upload Matrix media");
+            server_error(upload_error_message)
+        })?;
+        Ok(MediaSource::Plain(upload.content_uri))
+    }
+}
 
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct MentionsRequest {
@@ -70,6 +220,8 @@ pub(super) struct SendMediaMetadata {
     pub(super) body: Option<String>,
     #[serde(default)]
     pub(super) mentions: Option<MentionsRequest>,
+    #[serde(default)]
+    pub(super) relates_to: Option<RelatesTo>,
 }
 
 #[derive(Debug)]
@@ -285,6 +437,92 @@ mod tests {
             .unwrap();
         let multipart = Multipart::from_request(req, &()).await.unwrap();
         assert!(extract_multipart_media(multipart).await.is_err());
+    }
+
+    #[test]
+    fn relates_to_validates_trims_and_converts_to_matrix_json() {
+        let thread = resolve_relates_to(Some(RelatesTo::Thread {
+            event_id: " $root:example.org ".to_owned(),
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            thread,
+            RelatesTo::Thread {
+                event_id: "$root:example.org".to_owned()
+            }
+        );
+        assert_eq!(
+            thread.to_matrix_json(),
+            serde_json::json!({
+                "m.relates_to": {
+                    "rel_type": "m.thread",
+                    "event_id": "$root:example.org",
+                    "m.in_reply_to": {
+                        "event_id": "$root:example.org"
+                    }
+                }
+            })
+        );
+
+        let reply = resolve_relates_to(Some(RelatesTo::Reply {
+            event_id: "$reply:example.org".to_owned(),
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            reply.to_matrix_json(),
+            serde_json::json!({
+                "m.relates_to": {
+                    "m.in_reply_to": {
+                        "event_id": "$reply:example.org"
+                    }
+                }
+            })
+        );
+
+        let edit = resolve_relates_to(Some(RelatesTo::Edit {
+            event_id: "$edit:example.org".to_owned(),
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            edit.to_matrix_json(),
+            serde_json::json!({
+                "m.relates_to": {
+                    "rel_type": "m.replace",
+                    "event_id": "$edit:example.org"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn relates_to_rejects_empty_invalid_and_media_edit_relationships() {
+        assert!(
+            resolve_relates_to(Some(RelatesTo::Thread {
+                event_id: "   ".to_owned(),
+            }))
+            .is_err()
+        );
+        assert!(
+            resolve_relates_to(Some(RelatesTo::Reply {
+                event_id: "not-an-event-id".to_owned(),
+            }))
+            .is_err()
+        );
+        assert!(
+            resolve_media_relates_to(Some(RelatesTo::Edit {
+                event_id: "$edit:example.org".to_owned(),
+            }))
+            .is_err()
+        );
+        assert!(
+            resolve_media_relates_to(Some(RelatesTo::Thread {
+                event_id: "$root:example.org".to_owned(),
+            }))
+            .is_ok()
+        );
     }
 }
 

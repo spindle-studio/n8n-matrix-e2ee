@@ -1,7 +1,9 @@
 use matrix_sdk::ruma::events::room::message::{
-    ImageMessageEventContent, MessageFormat, MessageType, RoomMessageEventContent,
+    ImageMessageEventContent, MessageFormat, MessageType, Relation, RoomMessageEventContent,
 };
 use serde::Serialize;
+
+use super::RelatesTo;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +46,8 @@ pub(crate) enum GatewayEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         mentions: Option<GatewayMentions>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        relates_to: Option<RelatesTo>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         file_name: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         mime_type: Option<String>,
@@ -74,14 +78,36 @@ pub(crate) fn room_message_content_to_gateway_event(
     event_id: &str,
     message_event: &RoomMessageEventContent,
 ) -> Option<GatewayEvent> {
-    let mentions = message_event
-        .mentions
-        .as_ref()
-        .map(|mentions| GatewayMentions {
-            user_ids: mentions.user_ids.iter().map(ToString::to_string).collect(),
-            room: mentions.room,
-        });
-    match &message_event.msgtype {
+    let (msgtype, mentions_source, relates_to) = match &message_event.relates_to {
+        Some(Relation::Thread(thread)) => (
+            &message_event.msgtype,
+            message_event.mentions.as_ref(),
+            Some(RelatesTo::Thread {
+                event_id: thread.event_id.to_string(),
+            }),
+        ),
+        Some(Relation::Reply(reply)) => (
+            &message_event.msgtype,
+            message_event.mentions.as_ref(),
+            Some(RelatesTo::Reply {
+                event_id: reply.in_reply_to.event_id.to_string(),
+            }),
+        ),
+        Some(Relation::Replacement(replacement)) => (
+            &replacement.new_content.msgtype,
+            replacement.new_content.mentions.as_ref(),
+            Some(RelatesTo::Edit {
+                event_id: replacement.event_id.to_string(),
+            }),
+        ),
+        _ => (&message_event.msgtype, message_event.mentions.as_ref(), None),
+    };
+
+    let mentions = mentions_source.map(|mentions| GatewayMentions {
+        user_ids: mentions.user_ids.iter().map(ToString::to_string).collect(),
+        room: mentions.room,
+    });
+    match msgtype {
         MessageType::Text(content) => Some(GatewayEvent::Message {
             room_id: room_id.to_owned(),
             sender: sender.to_owned(),
@@ -94,6 +120,7 @@ pub(crate) fn room_message_content_to_gateway_event(
             event_id: event_id.to_owned(),
             message_type: GatewayMessageType::Text,
             mentions,
+            relates_to,
             file_name: None,
             mime_type: None,
             size_bytes: None,
@@ -113,6 +140,7 @@ pub(crate) fn room_message_content_to_gateway_event(
             event_id: event_id.to_owned(),
             message_type: GatewayMessageType::Notice,
             mentions,
+            relates_to,
             file_name: None,
             mime_type: None,
             size_bytes: None,
@@ -130,6 +158,7 @@ pub(crate) fn room_message_content_to_gateway_event(
                 event_id: event_id.to_owned(),
                 message_type: GatewayMessageType::Image,
                 mentions,
+                relates_to,
                 file_name: Some(content.filename().to_owned()),
                 mime_type: content.info.as_ref().and_then(|info| info.mimetype.clone()),
                 size_bytes,
@@ -146,6 +175,7 @@ pub(crate) fn room_message_content_to_gateway_event(
             event_id: event_id.to_owned(),
             message_type: GatewayMessageType::Audio,
             mentions,
+            relates_to,
             file_name: Some(content.filename().to_owned()),
             mime_type: content.info.as_ref().and_then(|info| info.mimetype.clone()),
             size_bytes: content
@@ -204,6 +234,7 @@ mod tests {
             event_id: "$message".to_owned(),
             message_type: GatewayMessageType::Text,
             mentions: None,
+            relates_to: None,
             file_name: None,
             mime_type: None,
             size_bytes: None,
@@ -270,6 +301,7 @@ mod tests {
             event_id: "$image".to_owned(),
             message_type: GatewayMessageType::Image,
             mentions: None,
+            relates_to: None,
             file_name: Some("cat.png".to_owned()),
             mime_type: Some("image/png".to_owned()),
             size_bytes: Some(42),
@@ -412,6 +444,125 @@ mod tests {
                     .unwrap()
                     .get("mentions")
                     .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn forwards_thread_and_reply_relationships_for_all_supported_message_types() {
+        for msgtype in ["m.text", "m.notice", "m.image", "m.audio"] {
+            let thread_content: RoomMessageEventContent = serde_json::from_value(serde_json::json!({
+                "msgtype": msgtype,
+                "body": "Threaded reply",
+                "url": "mxc://example.org/media",
+                "m.relates_to": {
+                    "rel_type": "m.thread",
+                    "event_id": "$root:example.org",
+                    "m.in_reply_to": {
+                        "event_id": "$root:example.org"
+                    }
+                }
+            }))
+            .unwrap();
+            let thread_event = room_message_content_to_gateway_event(
+                "!room:example.org",
+                "@sender:example.org",
+                "$event",
+                &thread_content,
+            )
+            .unwrap();
+            let thread_payload = serde_json::to_value(thread_event).unwrap();
+            assert_eq!(
+                thread_payload["relates_to"],
+                serde_json::json!({
+                    "rel_type": "thread",
+                    "event_id": "$root:example.org"
+                }),
+                "{msgtype}"
+            );
+
+            let reply_content: RoomMessageEventContent = serde_json::from_value(serde_json::json!({
+                "msgtype": msgtype,
+                "body": "Inline reply",
+                "url": "mxc://example.org/media",
+                "m.relates_to": {
+                    "m.in_reply_to": {
+                        "event_id": "$target:example.org"
+                    }
+                }
+            }))
+            .unwrap();
+            let reply_event = room_message_content_to_gateway_event(
+                "!room:example.org",
+                "@sender:example.org",
+                "$event",
+                &reply_content,
+            )
+            .unwrap();
+            let reply_payload = serde_json::to_value(reply_event).unwrap();
+            assert_eq!(
+                reply_payload["relates_to"],
+                serde_json::json!({
+                    "rel_type": "reply",
+                    "event_id": "$target:example.org"
+                }),
+                "{msgtype}"
+            );
+        }
+    }
+
+    #[test]
+    fn forwards_edit_relationship_using_clean_new_content() {
+        for (msgtype, expected_type) in [("m.text", "text"), ("m.notice", "notice")] {
+            let edit_content: RoomMessageEventContent = serde_json::from_value(serde_json::json!({
+                "msgtype": msgtype,
+                "body": "* Edited message",
+                "format": "org.matrix.custom.html",
+                "formatted_body": "* <p>Edited <strong>message</strong></p>",
+                "m.mentions": {},
+                "m.new_content": {
+                    "msgtype": msgtype,
+                    "body": "Edited message",
+                    "format": "org.matrix.custom.html",
+                    "formatted_body": "<p>Edited <strong>message</strong></p>",
+                    "m.mentions": {
+                        "user_ids": ["@alice:example.org"],
+                        "room": false
+                    }
+                },
+                "m.relates_to": {
+                    "rel_type": "m.replace",
+                    "event_id": "$original:example.org"
+                }
+            }))
+            .unwrap();
+            let event = room_message_content_to_gateway_event(
+                "!room:example.org",
+                "@sender:example.org",
+                "$edit_event",
+                &edit_content,
+            )
+            .unwrap();
+            let payload = serde_json::to_value(event).unwrap();
+            assert_eq!(
+                payload,
+                serde_json::json!({
+                    "event_type": "room.message",
+                    "room_id": "!room:example.org",
+                    "sender": "@sender:example.org",
+                    "body": "Edited message",
+                    "formatted_body": "<p>Edited <strong>message</strong></p>",
+                    "event_id": "$edit_event",
+                    "message_type": expected_type,
+                    "mentions": {
+                        "user_ids": ["@alice:example.org"],
+                        "room": false
+                    },
+                    "relates_to": {
+                        "rel_type": "edit",
+                        "event_id": "$original:example.org"
+                    }
+                })
             );
         }
     }
