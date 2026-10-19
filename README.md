@@ -3,7 +3,7 @@
 Send and receive messages in encrypted Matrix rooms from n8n.
 
 The **gateway** connects to Matrix and stores the bot's session and encryption
-keys. The **n8n nodes** connect to the gateway to send text, notices, images, and Ogg/Opus
+keys. The **n8n nodes** connect to the gateway to send text, notices, emotes, images, and Ogg/Opus
 audio, set typing indicators, or start a workflow when a message arrives.
 
 ## Getting started
@@ -83,7 +83,7 @@ Invite the bot to a room from an account listed in `ALLOWED_INVITERS`.
 Add **Matrix E2EE Trigger** to a workflow, select your credentials, and click
 **Listen for test event**. Send a new message to the room.
 
-The trigger receives text, notice, image, and audio messages and can download media for
+The trigger receives text, notice, emote, image, and audio messages and can download media for
 later steps. It only receives messages while listening; earlier messages aren't
 replayed. Messages sent by the bot itself are ignored.
 

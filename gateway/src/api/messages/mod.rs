@@ -1,4 +1,5 @@
 mod audio;
+mod emote;
 mod event;
 mod image;
 mod notice;
@@ -100,7 +101,7 @@ pub(super) fn resolve_media_relates_to(request: Option<RelatesTo>) -> ApiResult<
     let relates_to = resolve_relates_to(request)?;
     if matches!(relates_to, Some(RelatesTo::Edit { .. })) {
         return Err(client_error(
-            "edit relationship is only supported for text and notice messages",
+            "edit relationship is only supported for text, notice, and emote messages",
         ));
     }
     Ok(relates_to)
@@ -306,6 +307,7 @@ pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/text", post(text::send_text))
         .route("/notice", post(notice::send_notice))
+        .route("/emote", post(emote::send_emote))
         .route("/image", post(image::send_image))
         .route("/audio", post(audio::send_audio))
 }

@@ -372,6 +372,15 @@ mod tests {
     }
 
     #[test]
+    fn message_type_label_reports_emote_messages() {
+        let message_type = MessageType::Emote(
+            matrix_sdk::ruma::events::room::message::EmoteMessageEventContent::plain("waves"),
+        );
+
+        assert_eq!(gateway_message_type_label(&message_type), "emote");
+    }
+
+    #[test]
     fn message_type_label_reports_image_messages() {
         let message_type = MessageType::Image(
             matrix_sdk::ruma::events::room::message::ImageMessageEventContent::plain(

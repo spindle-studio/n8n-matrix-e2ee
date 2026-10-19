@@ -24,7 +24,7 @@ listed in the gateway's `ALLOWED_INVITERS`.
 
 ## Use the nodes
 
-**Matrix E2EE Trigger** starts a workflow when a text, image, or audio message
+**Matrix E2EE Trigger** starts a workflow when a text, notice, emote, image, or audio message
 arrives. To try it, add the trigger, select your credentials, click
 **Listen for test event**, and send a new message to the room. Messages received
 before the trigger connects aren't replayed, and the bot's own messages are ignored.
@@ -32,7 +32,7 @@ before the trigger connects aren't replayed, and the bot's own messages are igno
 Enable **Download Media** to pass received media to later nodes as binary data.
 Choose its output field with **Output Data Field Name**.
 
-**Matrix E2EE** sends text, images, and Ogg/Opus audio, or sets a typing indicator.
+**Matrix E2EE** sends text, notices, emotes, images, and Ogg/Opus audio, or sets a typing indicator.
 For example, connect it after the trigger to reply to an incoming message using
 that message's `room_id`. Images and audio are read from n8n binary data.
 Compatible Matrix clients display outgoing audio as a voice message; others show

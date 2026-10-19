@@ -105,6 +105,10 @@ export function getGatewaySendNoticeUrl(baseUrl: string): string {
 	return getGatewayApiUrl(baseUrl, '/v1/messages/notice');
 }
 
+export function getGatewaySendEmoteUrl(baseUrl: string): string {
+	return getGatewayApiUrl(baseUrl, '/v1/messages/emote');
+}
+
 export function getGatewaySendImageUrl(baseUrl: string): string {
 	return getGatewayApiUrl(baseUrl, '/v1/messages/image');
 }
@@ -340,7 +344,7 @@ export class MatrixE2ee implements INodeType {
 		group: ['output'],
 		version: [1],
 		subtitle:
-			'={{$parameter["operation"] === "typingIndicator" ? "Set typing indicator" : $parameter["operation"] === "editMessage" ? ($parameter["messageType"] === "notice" ? "Edit notice" : "Edit message") : $parameter["messageType"] === "notice" ? "Send notice" : $parameter["messageType"] === "image" ? "Send image" : $parameter["messageType"] === "audio" ? "Send audio" : "Send message"}}',
+			'={{$parameter["operation"] === "typingIndicator" ? "Set typing indicator" : $parameter["operation"] === "editMessage" ? ($parameter["messageType"] === "notice" ? "Edit notice" : $parameter["messageType"] === "emote" ? "Edit emote" : "Edit message") : $parameter["messageType"] === "notice" ? "Send notice" : $parameter["messageType"] === "emote" ? "Send emote" : $parameter["messageType"] === "image" ? "Send image" : $parameter["messageType"] === "audio" ? "Send audio" : "Send message"}}',
 		description: 'Send and receive encrypted Matrix messages',
 		defaults: {
 			name: 'Matrix E2EE',
@@ -365,13 +369,13 @@ export class MatrixE2ee implements INodeType {
 						name: 'Edit Message',
 						value: 'editMessage',
 						action: 'Edit a message',
-						description: 'Edit an existing text or notice message',
+						description: 'Edit an existing text, notice, or emote message',
 					},
 					{
 						name: 'Send Message',
 						value: 'message',
 						action: 'Send a message',
-						description: 'Send text, notice, image, or audio',
+						description: 'Send text, notice, emote, image, or audio',
 					},
 					{
 						name: 'Typing Indicator',
@@ -417,9 +421,19 @@ export class MatrixE2ee implements INodeType {
 				},
 				options: [
 					{
-						name: 'Text',
-						value: 'text',
-						description: 'Send a text message with full Markdown support',
+						name: 'Audio',
+						value: 'audio',
+						description: 'Send Ogg/Opus audio from incoming binary data',
+					},
+					{
+						name: 'Emote',
+						value: 'emote',
+						description: 'Send an emote (/me action) message with full Markdown support',
+					},
+					{
+						name: 'Image',
+						value: 'image',
+						description: 'Send an image from incoming binary data',
 					},
 					{
 						name: 'Notice',
@@ -428,14 +442,9 @@ export class MatrixE2ee implements INodeType {
 							'Send a silent notice message with full Markdown support without triggering notifications',
 					},
 					{
-						name: 'Image',
-						value: 'image',
-						description: 'Send an image from incoming binary data',
-					},
-					{
-						name: 'Audio',
-						value: 'audio',
-						description: 'Send Ogg/Opus audio from incoming binary data',
+						name: 'Text',
+						value: 'text',
+						description: 'Send a text message with full Markdown support',
 					},
 				],
 				default: 'text',
@@ -463,6 +472,12 @@ export class MatrixE2ee implements INodeType {
 						description:
 							'Edit the target message as a silent notice message with full Markdown support',
 					},
+					{
+						name: 'Emote',
+						value: 'emote',
+						description:
+							'Edit the target message as a Markdown-formatted emote (/me action) message',
+					},
 				],
 				default: 'text',
 				description: 'The type of Matrix message to send for the edit',
@@ -479,7 +494,7 @@ export class MatrixE2ee implements INodeType {
 				displayOptions: {
 					show: {
 						operation: ['message', 'editMessage'],
-						messageType: ['text', 'notice'],
+						messageType: ['text', 'notice', 'emote'],
 					},
 				},
 				description: 'The message to send (supports Markdown)',
@@ -614,7 +629,8 @@ export class MatrixE2ee implements INodeType {
 
 						switch (messageType) {
 							case 'text':
-							case 'notice': {
+							case 'notice':
+							case 'emote': {
 								const message = this.getNodeParameter('message', itemIndex) as string;
 
 								if (message.trim().length === 0) {
@@ -638,7 +654,9 @@ export class MatrixE2ee implements INodeType {
 										url:
 											messageType === 'notice'
 												? getGatewaySendNoticeUrl(baseUrl)
-												: getGatewaySendTextUrl(baseUrl),
+												: messageType === 'emote'
+													? getGatewaySendEmoteUrl(baseUrl)
+													: getGatewaySendTextUrl(baseUrl),
 										body: requestBody,
 										json: true,
 									},
@@ -760,7 +778,7 @@ export class MatrixE2ee implements INodeType {
 					}
 					case 'editMessage': {
 						const messageType = this.getNodeParameter('messageType', itemIndex) as string;
-						if (messageType !== 'text' && messageType !== 'notice') {
+						if (messageType !== 'text' && messageType !== 'notice' && messageType !== 'emote') {
 							throw new NodeOperationError(
 								this.getNode(),
 								`Unsupported message type for Edit Message: ${messageType}`,
@@ -806,7 +824,9 @@ export class MatrixE2ee implements INodeType {
 								url:
 									messageType === 'notice'
 										? getGatewaySendNoticeUrl(baseUrl)
-										: getGatewaySendTextUrl(baseUrl),
+										: messageType === 'emote'
+											? getGatewaySendEmoteUrl(baseUrl)
+											: getGatewaySendTextUrl(baseUrl),
 								body: requestBody,
 								json: true,
 							},
