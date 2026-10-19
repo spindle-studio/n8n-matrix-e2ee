@@ -4,6 +4,7 @@ mod event;
 mod image;
 mod notice;
 mod reaction;
+mod redact;
 mod text;
 
 use std::io::Cursor;
@@ -313,6 +314,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/image", post(image::send_image))
         .route("/audio", post(audio::send_audio))
         .route("/reaction", post(reaction::send_reaction))
+        .route("/redact", post(redact::redact_event))
 }
 
 fn message_action_response(

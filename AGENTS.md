@@ -115,6 +115,7 @@ The API is intentionally private: expose it only to trusted n8n workloads.
 | `POST /v1/messages/image` | Sends `multipart/form-data` with a JSON `metadata` part (`room_id`, optional `file_name`, optional `body`, optional `mentions`, optional `relates_to`) and a binary `media` image part |
 | `POST /v1/messages/audio` | Sends `multipart/form-data` with a JSON `metadata` part (`room_id`, optional `file_name`, optional `body`, optional `mentions`, optional `relates_to`) and a binary `media` Ogg/Opus part as a stable `m.audio` message |
 | `POST /v1/messages/reaction` | Sends `{"room_id":"...","event_id":"$...","key":"👍"}` as an `m.reaction` (`m.annotation`) event targeting `event_id` |
+| `POST /v1/messages/redact` | Sends `{"room_id":"...","event_id":"$...","reason":"..."}` as an `m.room.redaction` event redacting `event_id` (`reason` optional) |
 | `POST /v1/typing` | Sets `{"room_id":"...","typing":true|false,"timeout_seconds":30}` (`timeout_seconds` optional when `typing: true`) |
 | `GET /v1/media` | Downloads supported media by room and event ID |
 | `GET /v1/ws` | Streams validated `room.message` and `reaction` events over WebSocket |
