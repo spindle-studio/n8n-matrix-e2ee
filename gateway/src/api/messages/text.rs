@@ -1,12 +1,15 @@
 use axum::{Json, extract::State, http::HeaderMap};
-use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+use matrix_sdk::ruma::events::{Mentions, room::message::RoomMessageEventContent};
 use pulldown_cmark::{Event, Options, Parser, TagEnd, html};
 use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::gateway::AppState;
 
-use super::{MessageActionResponse, event::GatewayMessageType, message_action_response};
+use super::{
+    MentionsRequest, MessageActionResponse, event::GatewayMessageType, message_action_response,
+    resolve_mentions,
+};
 use crate::api::{
     auth::authorize_request,
     error::{ApiResult, client_error, server_error},
@@ -17,6 +20,8 @@ use crate::api::{
 pub(super) struct SendMarkdownRequest {
     room_id: String,
     body: String,
+    #[serde(default)]
+    mentions: Option<MentionsRequest>,
 }
 
 pub(super) async fn send_text(
@@ -34,7 +39,8 @@ pub(super) async fn send_markdown_message(
     gateway_message_type: GatewayMessageType,
 ) -> ApiResult<Json<MessageActionResponse>> {
     authorize_request(&state.api_secret_token, &headers)?;
-    let content = build_markdown_message_content(&request.body, gateway_message_type)
+    let mentions = resolve_mentions(request.mentions)?;
+    let content = build_markdown_message_content(&request.body, gateway_message_type, mentions)
         .ok_or_else(|| client_error("body must not be empty"))?;
 
     let room_id = parse_room_id(&request.room_id)?;
@@ -59,9 +65,10 @@ pub(super) async fn send_markdown_message(
 pub(super) fn build_markdown_message_content(
     markdown: &str,
     gateway_message_type: GatewayMessageType,
+    mentions: Mentions,
 ) -> Option<RoomMessageEventContent> {
     let (plain_body, formatted_body) = compile_markdown(markdown)?;
-    match gateway_message_type {
+    let mut content = match gateway_message_type {
         GatewayMessageType::Text => Some(RoomMessageEventContent::text_html(
             plain_body,
             formatted_body,
@@ -71,7 +78,9 @@ pub(super) fn build_markdown_message_content(
             formatted_body,
         )),
         GatewayMessageType::Image | GatewayMessageType::Audio => None,
-    }
+    }?;
+    content.mentions = Some(mentions);
+    Some(content)
 }
 
 fn compile_markdown(markdown: &str) -> Option<(String, String)> {
@@ -122,9 +131,12 @@ mod tests {
 
     #[test]
     fn converts_markdown_to_plain_body_and_html_formatted_body() {
-        let content =
-            build_markdown_message_content("Hello **world** and `code`!", GatewayMessageType::Text)
-                .unwrap();
+        let content = build_markdown_message_content(
+            "Hello **world** and `code`!",
+            GatewayMessageType::Text,
+            Mentions::new(),
+        )
+        .unwrap();
         let json = serde_json::to_value(content).unwrap();
 
         assert_eq!(
@@ -133,15 +145,22 @@ mod tests {
                 "msgtype": "m.text",
                 "body": "Hello world and code!",
                 "format": "org.matrix.custom.html",
-                "formatted_body": "<p>Hello <strong>world</strong> and <code>code</code>!</p>"
+                "formatted_body": "<p>Hello <strong>world</strong> and <code>code</code>!</p>",
+                "m.mentions": {}
             })
         );
     }
 
     #[test]
-    fn converts_plain_text_to_body_and_html_formatted_body() {
+    fn converts_plain_text_to_body_and_html_formatted_body_with_mentions() {
+        let mentions = resolve_mentions(Some(MentionsRequest {
+            user_ids: Some(vec!["@alice:example.org".to_owned()]),
+            room: Some(true),
+        }))
+        .unwrap();
         let content =
-            build_markdown_message_content("Hello Matrix", GatewayMessageType::Text).unwrap();
+            build_markdown_message_content("Hello Matrix", GatewayMessageType::Text, mentions)
+                .unwrap();
         let json = serde_json::to_value(content).unwrap();
 
         assert_eq!(
@@ -150,14 +169,27 @@ mod tests {
                 "msgtype": "m.text",
                 "body": "Hello Matrix",
                 "format": "org.matrix.custom.html",
-                "formatted_body": "<p>Hello Matrix</p>"
+                "formatted_body": "<p>Hello Matrix</p>",
+                "m.mentions": {
+                    "user_ids": ["@alice:example.org"],
+                    "room": true
+                }
             })
         );
     }
 
     #[test]
     fn rejects_empty_or_whitespace_only_body() {
-        assert!(build_markdown_message_content("", GatewayMessageType::Text).is_none());
-        assert!(build_markdown_message_content("   \n\t  ", GatewayMessageType::Text).is_none());
+        assert!(
+            build_markdown_message_content("", GatewayMessageType::Text, Mentions::new()).is_none()
+        );
+        assert!(
+            build_markdown_message_content(
+                "   \n\t  ",
+                GatewayMessageType::Text,
+                Mentions::new()
+            )
+            .is_none()
+        );
     }
 }

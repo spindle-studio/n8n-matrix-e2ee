@@ -189,7 +189,8 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 			baseUrl: 'https://gateway.example.org/',
 			apiToken: 'test-secret',
 		}),
-		getNodeParameter: (name) => params[name],
+		getNodeParameter: (name, _index, fallback) =>
+			name in params ? params[name] : fallback,
 		getNode: () => ({
 			name: 'Matrix E2EE',
 			type: 'matrixE2ee',
@@ -235,8 +236,37 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		makeContext({
 			operation: 'message',
 			roomId: '!room:example.org',
+			messageType: 'text',
+			message: 'Ping @room and @alice:example.org',
+			additionalFields: {
+				roomMention: true,
+				userIds: [' @ben:example.org ', '@alice:example.org', '@ben:example.org'],
+			},
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/text',
+		body: {
+			room_id: '!room:example.org',
+			body: 'Ping @room and @alice:example.org',
+			mentions: {
+				user_ids: ['@alice:example.org', '@ben:example.org'],
+				room: true,
+			},
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'message',
+			roomId: '!room:example.org',
 			messageType: 'notice',
 			message: 'Silent **notice**',
+			additionalFields: {
+				userIds: ['@alice:example.org'],
+			},
 		}),
 	);
 	assert.deepEqual(requests.at(-1), {
@@ -245,6 +275,10 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		body: {
 			room_id: '!room:example.org',
 			body: 'Silent **notice**',
+			mentions: {
+				user_ids: ['@alice:example.org'],
+				room: false,
+			},
 		},
 		json: true,
 	});
@@ -257,6 +291,10 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 				messageType: 'image',
 				binaryPropertyName: 'image',
 				caption: '  Alt caption  ',
+				additionalFields: {
+					roomMention: true,
+					userIds: ['@alice:example.org'],
+				},
 			},
 			{
 				image: {
@@ -266,20 +304,29 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 			},
 		),
 	);
-	assert.deepEqual(requests.at(-1), {
-		method: 'POST',
-		url: 'https://gateway.example.org/v1/messages/image',
-		qs: {
+	{
+		const req = requests.at(-1);
+		assert.equal(req.method, 'POST');
+		assert.equal(req.url, 'https://gateway.example.org/v1/messages/image');
+		assert.equal(req.json, true);
+		assert.equal(req.qs, undefined);
+		assert.ok(req.body instanceof FormData);
+		const metadataPart = req.body.get('metadata');
+		const mediaPart = req.body.get('media');
+		assert.equal(metadataPart.type, 'application/json');
+		assert.deepEqual(JSON.parse(await metadataPart.text()), {
 			room_id: '!room:example.org',
 			file_name: 'photo.png',
 			body: 'Alt caption',
-		},
-		headers: {
-			'Content-Type': 'image/png',
-		},
-		body: Buffer.from('binary-bytes'),
-		json: true,
-	});
+			mentions: {
+				user_ids: ['@alice:example.org'],
+				room: true,
+			},
+		});
+		assert.equal(mediaPart.type, 'image/png');
+		assert.equal(mediaPart.name, 'photo.png');
+		assert.deepEqual(Buffer.from(await mediaPart.arrayBuffer()), Buffer.from('binary-bytes'));
+	}
 
 	await MatrixE2ee.prototype.execute.call(
 		makeContext(
@@ -297,20 +344,41 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 			},
 		),
 	);
-	assert.deepEqual(requests.at(-1), {
-		method: 'POST',
-		url: 'https://gateway.example.org/v1/messages/audio',
-		qs: {
+	{
+		const req = requests.at(-1);
+		assert.equal(req.method, 'POST');
+		assert.equal(req.url, 'https://gateway.example.org/v1/messages/audio');
+		assert.equal(req.json, true);
+		assert.equal(req.qs, undefined);
+		assert.ok(req.body instanceof FormData);
+		const metadataPart = req.body.get('metadata');
+		const mediaPart = req.body.get('media');
+		assert.equal(metadataPart.type, 'application/json');
+		assert.deepEqual(JSON.parse(await metadataPart.text()), {
 			room_id: '!room:example.org',
 			file_name: 'audio-message.ogg',
 			body: 'Voice note',
-		},
-		headers: {
-			'Content-Type': 'audio/ogg',
-		},
-		body: Buffer.from('binary-bytes'),
-		json: true,
-	});
+		});
+		assert.equal(mediaPart.type, 'audio/ogg');
+		assert.equal(mediaPart.name, 'audio-message.ogg');
+		assert.deepEqual(Buffer.from(await mediaPart.arrayBuffer()), Buffer.from('binary-bytes'));
+	}
+
+	await assert.rejects(
+		() =>
+			MatrixE2ee.prototype.execute.call(
+				makeContext({
+					operation: 'message',
+					roomId: '!room:example.org',
+					messageType: 'text',
+					message: 'Invalid mention',
+					additionalFields: {
+						userIds: ['not-a-user-id'],
+					},
+				}),
+			),
+		/Invalid Matrix user ID/,
+	);
 
 	await MatrixE2ee.prototype.execute.call(
 		makeContext({

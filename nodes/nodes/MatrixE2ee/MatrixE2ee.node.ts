@@ -64,6 +64,109 @@ function resolveImageFileName(binaryData: IBinaryData, mimeType: string): string
 	return extension === undefined ? 'image' : `image.${extension}`;
 }
 
+function isValidMatrixUserId(userId: string): boolean {
+	if (!userId.startsWith('@')) {
+		return false;
+	}
+	const colonIndex = userId.indexOf(':');
+	return (
+		colonIndex > 1 &&
+		colonIndex < userId.length - 1 &&
+		!/\s/.test(userId)
+	);
+}
+
+function resolveOutgoingMentions(
+	this: IExecuteFunctions,
+	additionalFields: IDataObject | undefined,
+	itemIndex: number,
+): IDataObject | undefined {
+	if (additionalFields === undefined) {
+		return undefined;
+	}
+
+	const hasRoomMention = additionalFields.roomMention !== undefined;
+	const room = Boolean(additionalFields.roomMention);
+	const rawUserIds = additionalFields.userIds;
+
+	let userIds: string[] = [];
+	if (Array.isArray(rawUserIds)) {
+		for (const entry of rawUserIds) {
+			if (typeof entry !== 'string') {
+				throw new NodeOperationError(
+					this.getNode(),
+					'User Mentions entries must be Matrix user ID strings (for example @alice:example.org).',
+					{ itemIndex },
+				);
+			}
+			const trimmed = entry.trim();
+			if (trimmed.length === 0) {
+				continue;
+			}
+			if (!isValidMatrixUserId(trimmed)) {
+				throw new NodeOperationError(
+					this.getNode(),
+					`Invalid Matrix user ID in User Mentions: "${trimmed}". Expected @user:domain.`,
+					{ itemIndex },
+				);
+			}
+			userIds.push(trimmed);
+		}
+	} else if (typeof rawUserIds === 'string') {
+		for (const part of rawUserIds.split(',')) {
+			const trimmed = part.trim();
+			if (trimmed.length === 0) {
+				continue;
+			}
+			if (!isValidMatrixUserId(trimmed)) {
+				throw new NodeOperationError(
+					this.getNode(),
+					`Invalid Matrix user ID in User Mentions: "${trimmed}". Expected @user:domain.`,
+					{ itemIndex },
+				);
+			}
+			userIds.push(trimmed);
+		}
+	} else if (rawUserIds !== undefined) {
+		throw new NodeOperationError(
+			this.getNode(),
+			'User Mentions must be a list of Matrix user IDs.',
+			{ itemIndex },
+		);
+	}
+
+	userIds = [...new Set(userIds)].sort();
+
+	if (!hasRoomMention && userIds.length === 0) {
+		return undefined;
+	}
+
+	return {
+		user_ids: userIds,
+		room,
+	};
+}
+
+function buildMultipartMediaFormData(
+	metadata: IDataObject,
+	binaryBuffer: Buffer,
+	mimeType: string,
+	fileName: string,
+): FormData {
+	const formData = new FormData();
+	formData.append(
+		'metadata',
+		new Blob([JSON.stringify(metadata)], { type: 'application/json' }),
+		'metadata.json',
+	);
+	formData.append(
+		'media',
+		new Blob([new Uint8Array(binaryBuffer)], { type: mimeType }),
+		fileName,
+	);
+	return formData;
+}
+
 export class MatrixE2ee implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Matrix E2EE',
@@ -207,6 +310,40 @@ export class MatrixE2ee implements INodeType {
 				description: 'Optional caption to send with the image or audio (maps to Matrix body)',
 			},
 			{
+				displayName: 'Additional Fields',
+				name: 'additionalFields',
+				type: 'collection',
+				placeholder: 'Add Field',
+				default: {},
+				displayOptions: {
+					show: {
+						operation: ['message'],
+					},
+				},
+				options: [
+					{
+						displayName: 'Room Mention',
+						name: 'roomMention',
+						type: 'boolean',
+						default: false,
+						description: 'Whether to trigger an @room mention notification (Matrix m.mentions.room)',
+					},
+					{
+						displayName: 'User Mentions',
+						name: 'userIds',
+						type: 'string',
+						default: [],
+						placeholder: '@alice:example.org',
+						typeOptions: {
+							multipleValues: true,
+							multipleValueButtonText: 'Add User',
+						},
+						description:
+							'Matrix user IDs to mention in the message (Matrix m.mentions.user_ids)',
+					},
+				],
+			},
+			{
 				displayName: 'Typing State',
 				name: 'typingState',
 				type: 'options',
@@ -279,6 +416,12 @@ export class MatrixE2ee implements INodeType {
 				switch (operation) {
 					case 'message': {
 						const messageType = this.getNodeParameter('messageType', itemIndex) as string;
+						const additionalFields = this.getNodeParameter(
+							'additionalFields',
+							itemIndex,
+							{},
+						) as IDataObject | undefined;
+						const mentions = resolveOutgoingMentions.call(this, additionalFields, itemIndex);
 
 						switch (messageType) {
 							case 'text':
@@ -291,6 +434,12 @@ export class MatrixE2ee implements INodeType {
 									});
 								}
 
+								const requestBody: IDataObject = {
+									room_id: roomId,
+									body: message,
+									...(mentions === undefined ? {} : { mentions }),
+								};
+
 								responseData = await this.helpers.httpRequestWithAuthentication.call(
 									this,
 									'matrixE2eeApi',
@@ -300,10 +449,7 @@ export class MatrixE2ee implements INodeType {
 											messageType === 'notice'
 												? getGatewaySendNoticeUrl(baseUrl)
 												: getGatewaySendTextUrl(baseUrl),
-										body: {
-											room_id: roomId,
-											body: message,
-										} satisfies IDataObject,
+										body: requestBody,
 										json: true,
 									},
 								);
@@ -328,14 +474,17 @@ export class MatrixE2ee implements INodeType {
 								}
 
 								const fileName = resolveImageFileName(binaryData, mimeType);
-								const qs: IDataObject = {
+								const metadata: IDataObject = {
 									room_id: roomId,
 									file_name: fileName,
 								};
 								const trimmedCaption = trimmedOrUndefined(caption);
 
 								if (trimmedCaption !== undefined) {
-									qs.body = trimmedCaption;
+									metadata.body = trimmedCaption;
+								}
+								if (mentions !== undefined) {
+									metadata.mentions = mentions;
 								}
 
 								responseData = await this.helpers.httpRequestWithAuthentication.call(
@@ -344,11 +493,12 @@ export class MatrixE2ee implements INodeType {
 									{
 										method: 'POST',
 										url: getGatewaySendImageUrl(baseUrl),
-										qs,
-										headers: {
-											'Content-Type': mimeType,
-										},
-										body: binaryBuffer,
+										body: buildMultipartMediaFormData(
+											metadata,
+											binaryBuffer,
+											mimeType,
+											fileName,
+										),
 										json: true,
 									},
 								);
@@ -374,14 +524,17 @@ export class MatrixE2ee implements INodeType {
 
 								const fileName =
 									trimmedOrUndefined(binaryData.fileName ?? '') ?? 'audio-message.ogg';
-								const qs: IDataObject = {
+								const metadata: IDataObject = {
 									room_id: roomId,
 									file_name: fileName,
 								};
 								const trimmedCaption = trimmedOrUndefined(caption);
 
 								if (trimmedCaption !== undefined) {
-									qs.body = trimmedCaption;
+									metadata.body = trimmedCaption;
+								}
+								if (mentions !== undefined) {
+									metadata.mentions = mentions;
 								}
 								responseData = await this.helpers.httpRequestWithAuthentication.call(
 									this,
@@ -389,11 +542,12 @@ export class MatrixE2ee implements INodeType {
 									{
 										method: 'POST',
 										url: getGatewaySendAudioUrl(baseUrl),
-										qs,
-										headers: {
-											'Content-Type': mimeType,
-										},
-										body: binaryBuffer,
+										body: buildMultipartMediaFormData(
+											metadata,
+											binaryBuffer,
+											mimeType,
+											fileName,
+										),
 										json: true,
 									},
 								);

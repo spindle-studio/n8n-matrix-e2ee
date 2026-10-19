@@ -1,15 +1,13 @@
 use axum::{
     Json,
-    body::Bytes,
-    extract::{Query, State},
-    http::{HeaderMap, header},
+    extract::{Multipart, State},
+    http::HeaderMap,
 };
 use matrix_sdk::{
     attachment::{AttachmentConfig, AttachmentInfo, BaseImageInfo},
     ruma::{UInt, events::room::message::TextMessageEventContent},
 };
 use mime::Mime;
-use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
@@ -21,41 +19,42 @@ use crate::{
     gateway::AppState,
 };
 
-use super::{MessageActionResponse, event::GatewayMessageType, message_action_response};
-
-#[derive(Debug, Deserialize)]
-pub(super) struct SendImageQuery {
-    room_id: String,
-    file_name: Option<String>,
-    body: Option<String>,
-}
+use super::{
+    MessageActionResponse, event::GatewayMessageType, extract_multipart_media,
+    message_action_response, resolve_mentions,
+};
 
 pub(super) async fn send_image(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(query): Query<SendImageQuery>,
-    body: Bytes,
+    multipart: Multipart,
 ) -> ApiResult<Json<MessageActionResponse>> {
     authorize_request(&state.api_secret_token, &headers)?;
-    if body.is_empty() {
+    let upload = extract_multipart_media(multipart).await?;
+    if upload.data.is_empty() {
         return Err(client_error("image body must not be empty"));
     }
 
-    let content_type = request_content_type(&headers)?;
-    if content_type.type_() != mime::IMAGE {
-        return Err(client_error("Content-Type must be an image MIME type"));
-    }
-
-    let room_id = parse_room_id(&query.room_id)?;
+    let content_type = validate_image_content_type(upload.content_type)?;
+    let mentions = resolve_mentions(upload.metadata.mentions)?;
+    let room_id = parse_room_id(&upload.metadata.room_id)?;
     let room = get_known_room(&state.client, &room_id)?;
-    let file_name = resolved_file_name(query.file_name.as_deref(), &content_type);
-    let message_body = trimmed_non_empty(query.body.as_deref());
+    let file_name = resolved_file_name(
+        upload
+            .metadata
+            .file_name
+            .as_deref()
+            .or(upload.part_file_name.as_deref()),
+        &content_type,
+    );
+    let message_body = trimmed_non_empty(upload.metadata.body.as_deref());
 
-    let mut attachment_config =
-        AttachmentConfig::new().info(AttachmentInfo::Image(BaseImageInfo {
-            size: UInt::new(body.len() as u64),
+    let mut attachment_config = AttachmentConfig::new()
+        .info(AttachmentInfo::Image(BaseImageInfo {
+            size: UInt::new(upload.data.len() as u64),
             ..BaseImageInfo::default()
-        }));
+        }))
+        .mentions(Some(mentions));
     if let Some(message_body) = message_body {
         attachment_config = attachment_config.caption(Some(TextMessageEventContent::plain(
             message_body.to_owned(),
@@ -63,7 +62,7 @@ pub(super) async fn send_image(
     }
 
     info!(room_id = %room_id, file_name, mime_type = %content_type, message_type = "image", "sending Matrix image message");
-    let response = room.send_attachment(file_name.clone(), &content_type, body.to_vec(), attachment_config).await.map_err(|error| {
+    let response = room.send_attachment(file_name.clone(), &content_type, upload.data.to_vec(), attachment_config).await.map_err(|error| {
         error!(%error, room_id = %room_id, file_name, mime_type = %content_type, "failed to send Matrix image message");
         server_error("failed to send Matrix image message")
     })?;
@@ -75,14 +74,13 @@ pub(super) async fn send_image(
     ))
 }
 
-pub(crate) fn request_content_type(headers: &HeaderMap) -> ApiResult<Mime> {
-    let value = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| client_error("Content-Type header is required"))?;
-    value
-        .parse()
-        .map_err(|_| client_error("Content-Type header must be a valid MIME type"))
+fn validate_image_content_type(content_type: Option<Mime>) -> ApiResult<Mime> {
+    let content_type =
+        content_type.ok_or_else(|| client_error("media part Content-Type header is required"))?;
+    if content_type.type_() != mime::IMAGE {
+        return Err(client_error("media part Content-Type must be an image MIME type"));
+    }
+    Ok(content_type)
 }
 
 pub(crate) fn resolved_file_name(file_name: Option<&str>, content_type: &Mime) -> String {
@@ -110,5 +108,12 @@ mod tests {
     fn file_name_falls_back_to_content_type() {
         let content_type: Mime = "image/png".parse().unwrap();
         assert_eq!(resolved_file_name(None, &content_type), "image.png");
+    }
+
+    #[test]
+    fn image_content_type_requires_image_mime() {
+        assert!(validate_image_content_type(Some("image/png".parse().unwrap())).is_ok());
+        assert!(validate_image_content_type(Some("audio/ogg".parse().unwrap())).is_err());
+        assert!(validate_image_content_type(None).is_err());
     }
 }
