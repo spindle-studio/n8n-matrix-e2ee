@@ -799,4 +799,74 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 			),
 		/Custom Reaction must not be empty/,
 	);
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'redact',
+			roomId: '!room:example.org',
+			targetEventId: ' $target_message:example.org ',
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/redact',
+		body: {
+			room_id: '!room:example.org',
+			event_id: '$target_message:example.org',
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'redact',
+			roomId: '!room:example.org',
+			targetEventId: '$target_message:example.org',
+			additionalFields: {
+				reason: '  Spam content  ',
+			},
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/redact',
+		body: {
+			room_id: '!room:example.org',
+			event_id: '$target_message:example.org',
+			reason: 'Spam content',
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'redact',
+			roomId: '!room:example.org',
+			targetEventId: '$target_message:example.org',
+			additionalFields: {
+				reason: '   ',
+			},
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/redact',
+		body: {
+			room_id: '!room:example.org',
+			event_id: '$target_message:example.org',
+		},
+		json: true,
+	});
+
+	await assert.rejects(
+		() =>
+			MatrixE2ee.prototype.execute.call(
+				makeContext({
+					operation: 'redact',
+					roomId: '!room:example.org',
+					targetEventId: 'invalid-event-id',
+				}),
+			),
+		/Invalid Matrix event ID in Target Event/,
+	);
 });

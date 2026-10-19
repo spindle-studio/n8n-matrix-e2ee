@@ -150,6 +150,10 @@ export function getGatewaySendReactionUrl(baseUrl: string): string {
 	return getGatewayApiUrl(baseUrl, '/v1/messages/reaction');
 }
 
+export function getGatewayRedactUrl(baseUrl: string): string {
+	return getGatewayApiUrl(baseUrl, '/v1/messages/redact');
+}
+
 export function getGatewayTypingUrl(baseUrl: string): string {
 	return getGatewayApiUrl(baseUrl, '/v1/typing');
 }
@@ -377,7 +381,7 @@ export class MatrixE2ee implements INodeType {
 		group: ['output'],
 		version: [1],
 		subtitle:
-			'={{$parameter["operation"] === "typingIndicator" ? "Set typing indicator" : $parameter["operation"] === "reaction" ? "Send reaction" : $parameter["operation"] === "editMessage" ? ($parameter["messageType"] === "notice" ? "Edit notice" : $parameter["messageType"] === "emote" ? "Edit emote" : "Edit message") : $parameter["messageType"] === "notice" ? "Send notice" : $parameter["messageType"] === "emote" ? "Send emote" : $parameter["messageType"] === "image" ? "Send image" : $parameter["messageType"] === "audio" ? "Send audio" : "Send message"}}',
+			'={{$parameter["operation"] === "typingIndicator" ? "Set typing indicator" : $parameter["operation"] === "reaction" ? "Send reaction" : $parameter["operation"] === "redact" ? "Delete message" : $parameter["operation"] === "editMessage" ? ($parameter["messageType"] === "notice" ? "Edit notice" : $parameter["messageType"] === "emote" ? "Edit emote" : "Edit message") : $parameter["messageType"] === "notice" ? "Send notice" : $parameter["messageType"] === "emote" ? "Send emote" : $parameter["messageType"] === "image" ? "Send image" : $parameter["messageType"] === "audio" ? "Send audio" : "Send message"}}',
 		description: 'Send and receive encrypted Matrix messages',
 		defaults: {
 			name: 'Matrix E2EE',
@@ -398,6 +402,12 @@ export class MatrixE2ee implements INodeType {
 				type: 'options',
 				noDataExpression: true,
 				options: [
+					{
+						name: 'Delete Message',
+						value: 'redact',
+						action: 'Delete a message',
+						description: 'Remove an existing message or reaction',
+					},
 					{
 						name: 'Edit Message',
 						value: 'editMessage',
@@ -443,10 +453,11 @@ export class MatrixE2ee implements INodeType {
 				placeholder: '$abc123xyz...',
 				displayOptions: {
 					show: {
-						operation: ['editMessage', 'reaction'],
+						operation: ['editMessage', 'reaction', 'redact'],
 					},
 				},
-				description: 'The Matrix $event_id of the existing message to edit or react to',
+				description:
+					'The Matrix $event_id of the existing message or reaction to edit, react to, or delete',
 			},
 			{
 				displayName: 'Reaction',
@@ -612,6 +623,27 @@ export class MatrixE2ee implements INodeType {
 					},
 				},
 				options: [...mentionProperties],
+			},
+			{
+				displayName: 'Additional Fields',
+				name: 'additionalFields',
+				type: 'collection',
+				placeholder: 'Add Field',
+				default: {},
+				displayOptions: {
+					show: {
+						operation: ['redact'],
+					},
+				},
+				options: [
+					{
+						displayName: 'Reason',
+						name: 'reason',
+						type: 'string',
+						default: '',
+						description: 'Optional reason for deleting the message or reaction',
+					},
+				],
 			},
 			{
 				displayName: 'Typing State',
@@ -938,6 +970,43 @@ export class MatrixE2ee implements INodeType {
 									room_id: roomId,
 									event_id: targetEventId,
 									key,
+								},
+								json: true,
+							},
+						);
+						break;
+					}
+					case 'redact': {
+						const targetEventId = resolveValidatedEventId.call(
+							this,
+							this.getNodeParameter('targetEventId', itemIndex),
+							'Target Event',
+							itemIndex,
+						);
+						const additionalFields = this.getNodeParameter(
+							'additionalFields',
+							itemIndex,
+							{},
+						) as IDataObject | undefined;
+						const rawReason = additionalFields?.reason;
+						if (rawReason !== undefined && typeof rawReason !== 'string') {
+							throw new NodeOperationError(this.getNode(), 'Reason must be a string.', {
+								itemIndex,
+							});
+						}
+						const reason =
+							typeof rawReason === 'string' ? trimmedOrUndefined(rawReason) : undefined;
+
+						responseData = await this.helpers.httpRequestWithAuthentication.call(
+							this,
+							'matrixE2eeApi',
+							{
+								method: 'POST',
+								url: getGatewayRedactUrl(baseUrl),
+								body: {
+									room_id: roomId,
+									event_id: targetEventId,
+									...(reason === undefined ? {} : { reason }),
 								},
 								json: true,
 							},
