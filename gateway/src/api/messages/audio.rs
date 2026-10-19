@@ -2,26 +2,28 @@ use std::{io::Cursor, time::Duration};
 
 use axum::{
     Json,
-    body::Bytes,
-    extract::{Query, State},
-    http::{HeaderMap, header},
+    extract::{Multipart, State},
+    http::HeaderMap,
 };
 use matrix_sdk::{
     Room,
     ruma::{
         UInt,
-        events::room::{
-            MediaSource,
-            message::{AudioInfo, AudioMessageEventContent, MessageType, RoomMessageEventContent},
-            message::{
-                UnstableAmplitude, UnstableAudioDetailsContentBlock, UnstableVoiceContentBlock,
+        events::{
+            Mentions,
+            room::{
+                MediaSource,
+                message::{
+                    AudioInfo, AudioMessageEventContent, MessageType, RoomMessageEventContent,
+                    UnstableAmplitude, UnstableAudioDetailsContentBlock, UnstableVoiceContentBlock,
+                },
             },
         },
     },
 };
+use mime::Mime;
 use ogg::PacketReader;
 use opus_decoder::OpusDecoder;
-use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
@@ -33,17 +35,14 @@ use crate::{
     gateway::AppState,
 };
 
-use super::{MessageActionResponse, event::GatewayMessageType, message_action_response};
+use super::{
+    MessageActionResponse, event::GatewayMessageType, extract_multipart_media,
+    message_action_response, resolve_mentions,
+};
 
 const OPUS_SAMPLE_RATE: u32 = 48_000;
 const WAVEFORM_BUCKET_COUNT: usize = 60;
 const WAVEFORM_COMPRESSION_EXPONENT: f64 = 0.25;
-#[derive(Debug, Deserialize)]
-pub(super) struct SendAudioQuery {
-    room_id: String,
-    file_name: Option<String>,
-    body: Option<String>,
-}
 
 fn downmix_pcm(pcm: &[i16], channels: usize) -> Vec<i16> {
     pcm.chunks_exact(channels)
@@ -95,33 +94,41 @@ struct AudioMetadata {
 pub(super) async fn send_audio(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(query): Query<SendAudioQuery>,
-    body: Bytes,
+    multipart: Multipart,
 ) -> ApiResult<Json<MessageActionResponse>> {
     authorize_request(&state.api_secret_token, &headers)?;
-    validate_audio_content_type(&headers)?;
-    if body.is_empty() {
+    let upload = extract_multipart_media(multipart).await?;
+    let content_type = validate_audio_content_type(upload.content_type)?;
+    if upload.data.is_empty() {
         return Err(client_error("audio body must not be empty"));
     }
 
-    let metadata = extract_audio_metadata(&body).map_err(|message| client_error(message))?;
-    let room_id = parse_room_id(&query.room_id)?;
+    let mentions = resolve_mentions(upload.metadata.mentions)?;
+    let metadata = extract_audio_metadata(&upload.data).map_err(|message| client_error(message))?;
+    let room_id = parse_room_id(&upload.metadata.room_id)?;
     let room = get_known_room(&state.client, &room_id)?;
-    let file_name = audio_file_name(query.file_name.as_deref());
-    let message_body = audio_body(query.body.as_deref());
-    let source = upload_audio_media(&state.client, &room, &headers, body.to_vec()).await?;
-    let content = audio_message_content(
+    let file_name = audio_file_name(
+        upload
+            .metadata
+            .file_name
+            .as_deref()
+            .or(upload.part_file_name.as_deref()),
+    );
+    let message_body = audio_body(upload.metadata.body.as_deref());
+    let source = upload_audio_media(&state.client, &room, &content_type, upload.data.to_vec()).await?;
+    let content = audio_room_message_content(
         message_body,
         file_name.clone(),
         source,
-        body.len() as u64,
+        upload.data.len() as u64,
         metadata.duration,
         metadata.waveform,
+        mentions,
     );
 
     info!(room_id = %room_id, file_name, message_type = "audio", "sending Matrix audio message");
     let response = room
-        .send(RoomMessageEventContent::new(MessageType::Audio(content)))
+        .send(content)
         .await
         .map_err(|error| {
             error!(%error, room_id = %room_id, "failed to send Matrix audio message");
@@ -135,19 +142,15 @@ pub(super) async fn send_audio(
     ))
 }
 
-fn validate_audio_content_type(headers: &HeaderMap) -> ApiResult<()> {
-    let content_type = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| client_error("Content-Type header is required"))?
-        .parse::<mime::Mime>()
-        .map_err(|_| client_error("Content-Type header must be a valid MIME type"))?;
+fn validate_audio_content_type(content_type: Option<Mime>) -> ApiResult<Mime> {
+    let content_type =
+        content_type.ok_or_else(|| client_error("media part Content-Type header is required"))?;
     if content_type.essence_str() != "audio/ogg" {
         return Err(client_error(
-            "Content-Type must be audio/ogg for Ogg/Opus audio",
+            "media part Content-Type must be audio/ogg for Ogg/Opus audio",
         ));
     }
-    Ok(())
+    Ok(content_type)
 }
 
 fn extract_audio_metadata(data: &[u8]) -> Result<AudioMetadata, &'static str> {
@@ -238,7 +241,7 @@ fn audio_body(value: Option<&str>) -> String {
 async fn upload_audio_media(
     client: &matrix_sdk::Client,
     room: &Room,
-    headers: &HeaderMap,
+    content_type: &Mime,
     data: Vec<u8>,
 ) -> ApiResult<MediaSource> {
     if room.latest_encryption_state().await.map_err(|error| {
@@ -252,8 +255,7 @@ async fn upload_audio_media(
         })?;
         Ok(MediaSource::Encrypted(Box::new(encrypted)))
     } else {
-        let content_type: mime::Mime = headers.get(header::CONTENT_TYPE).unwrap().to_str().unwrap().parse().unwrap();
-        let upload = client.media().upload(&content_type, data, None).await.map_err(|error| {
+        let upload = client.media().upload(content_type, data, None).await.map_err(|error| {
             error!(%error, room_id = %room.room_id(), "failed to upload Matrix audio media");
             server_error("failed to upload Matrix audio media")
         })?;
@@ -261,14 +263,15 @@ async fn upload_audio_media(
     }
 }
 
-fn audio_message_content(
+fn audio_room_message_content(
     body: String,
     file_name: String,
     source: MediaSource,
     size_bytes: u64,
     duration: Duration,
     waveform: Vec<UnstableAmplitude>,
-) -> AudioMessageEventContent {
+    mentions: Mentions,
+) -> RoomMessageEventContent {
     let mut info = AudioInfo::new();
     info.duration = Some(duration);
     info.mimetype = Some("audio/ogg".to_owned());
@@ -279,13 +282,17 @@ fn audio_message_content(
     content.info = Some(Box::new(info));
     content.audio = Some(UnstableAudioDetailsContentBlock::new(duration, waveform));
     content.voice = Some(UnstableVoiceContentBlock::new());
-    content
+
+    let mut message = RoomMessageEventContent::new(MessageType::Audio(content));
+    message.mentions = Some(mentions);
+    message
 }
 
 #[cfg(test)]
 mod tests {
     use matrix_sdk::ruma::owned_mxc_uri;
 
+    use super::super::MentionsRequest;
     use super::*;
 
     #[test]
@@ -297,25 +304,24 @@ mod tests {
     }
 
     #[test]
-    fn voice_compatible_audio_message_contains_standard_metadata() {
-        let content = audio_message_content(
+    fn voice_compatible_audio_message_contains_standard_metadata_and_mentions() {
+        let mentions = resolve_mentions(Some(MentionsRequest {
+            user_ids: Some(vec!["@alice:example.org".to_owned()]),
+            room: Some(true),
+        }))
+        .unwrap();
+        let content = audio_room_message_content(
             "Audio message".to_owned(),
             "audio.ogg".to_owned(),
             MediaSource::Plain(owned_mxc_uri!("mxc://example.org/audio")),
             42,
             Duration::from_secs(3),
             vec![UnstableAmplitude::new(0), UnstableAmplitude::new(1024)],
+            mentions,
         );
 
-        assert_eq!(content.filename.as_deref(), Some("audio.ogg"));
         assert_eq!(
-            content.info.as_ref().unwrap().mimetype.as_deref(),
-            Some("audio/ogg")
-        );
-        assert_eq!(content.info.as_ref().unwrap().size, UInt::new(42));
-        assert_eq!(
-            serde_json::to_value(RoomMessageEventContent::new(MessageType::Audio(content)))
-                .unwrap(),
+            serde_json::to_value(content).unwrap(),
             serde_json::json!({
                 "body": "Audio message",
                 "filename": "audio.ogg",
@@ -323,7 +329,11 @@ mod tests {
                 "info": {"duration": 3000, "mimetype": "audio/ogg", "size": 42},
                 "org.matrix.msc1767.audio": {"duration": 3000, "waveform": [0, 1024]},
                 "org.matrix.msc3245.voice": {},
-                "msgtype": "m.audio"
+                "msgtype": "m.audio",
+                "m.mentions": {
+                    "user_ids": ["@alice:example.org"],
+                    "room": true
+                }
             })
         );
     }

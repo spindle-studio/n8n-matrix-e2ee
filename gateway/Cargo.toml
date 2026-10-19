@@ -7,7 +7,7 @@ repository = "https://github.com/spindle-studio/n8n-matrix-e2ee"
 
 [dependencies]
 anyhow = "1"
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["multipart", "ws"] }
 dotenvy = "0.15.7"
 futures-util = "0.3"
 matrix-sdk = { version = "0.18", default-features = false, features = ["e2e-encryption", "sqlite"] }

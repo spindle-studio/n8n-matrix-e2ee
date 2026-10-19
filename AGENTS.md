@@ -109,10 +109,10 @@ The API is intentionally private: expose it only to trusted n8n workloads.
 | --- | --- |
 | `GET /healthz` | Returns `200` after initialization |
 | `GET /v1/auth-check` | Returns `204` for a valid bearer token |
-| `POST /v1/messages/text` | Sends `{"room_id":"...","body":"..."}` as `m.text` (converts Markdown to plain-text `body` and HTML `formatted_body`) |
-| `POST /v1/messages/notice` | Sends `{"room_id":"...","body":"..."}` as `m.notice` (converts Markdown to plain-text `body` and HTML `formatted_body` without triggering notifications) |
-| `POST /v1/messages/image` | Sends raw image bytes; query parameters supply room ID, file name, and optional `body` |
-| `POST /v1/messages/audio` | Sends raw Ogg/Opus bytes as a stable `m.audio` message with optional `body` |
+| `POST /v1/messages/text` | Sends `{"room_id":"...","body":"...","mentions":{...}}` as `m.text` (converts Markdown to plain-text `body` and HTML `formatted_body`; `mentions` optional) |
+| `POST /v1/messages/notice` | Sends `{"room_id":"...","body":"...","mentions":{...}}` as `m.notice` (converts Markdown to plain-text `body` and HTML `formatted_body` without triggering notifications; `mentions` optional) |
+| `POST /v1/messages/image` | Sends `multipart/form-data` with a JSON `metadata` part (`room_id`, optional `file_name`, optional `body`, optional `mentions`) and a binary `media` image part |
+| `POST /v1/messages/audio` | Sends `multipart/form-data` with a JSON `metadata` part (`room_id`, optional `file_name`, optional `body`, optional `mentions`) and a binary `media` Ogg/Opus part as a stable `m.audio` message |
 | `POST /v1/typing` | Sets `{"room_id":"...","typing":true|false,"timeout_seconds":30}` (`timeout_seconds` optional when `typing: true`) |
 | `GET /v1/media` | Downloads supported media by room and event ID |
 | `GET /v1/ws` | Streams validated `room.message` events over WebSocket |
@@ -148,7 +148,12 @@ older gateways without `mentions` remain valid. When present, `mentions` must
 contain a string array `user_ids` and a boolean `room`; malformed metadata is
 rejected by the trigger like other invalid event fields.
 
-Outgoing audio includes MSC3245 compatibility metadata for a voice marker and
+Outgoing text, notice, image, and audio messages always attach Matrix 1.6+
+`m.mentions` metadata (defaulting to `{}` so homeservers and clients do not fall
+back to legacy text-matching push rules). Any message request may include an
+optional `mentions` object (`{"room": true|false, "user_ids": ["@user:example.org"]}`);
+`user_ids` entries are validated as Matrix user IDs, trimmed, deduplicated, and
+sorted. Outgoing audio includes MSC3245 compatibility metadata for a voice marker and
 waveform preview. Element X and compatible clients render it as a voice
 message, while other clients can fall back to generic audio attachments. The
 gateway filters events from its configured Matrix user. It automatically

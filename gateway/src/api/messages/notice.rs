@@ -18,6 +18,8 @@ pub(super) async fn send_notice(
 
 #[cfg(test)]
 mod tests {
+    use matrix_sdk::ruma::events::Mentions;
+
     use super::super::text::build_markdown_message_content;
     use super::*;
 
@@ -26,6 +28,7 @@ mod tests {
         let content = build_markdown_message_content(
             "Silent **status** and `code`!",
             GatewayMessageType::Notice,
+            Mentions::new(),
         )
         .unwrap();
         let json = serde_json::to_value(content).unwrap();
@@ -36,14 +39,25 @@ mod tests {
                 "msgtype": "m.notice",
                 "body": "Silent status and code!",
                 "format": "org.matrix.custom.html",
-                "formatted_body": "<p>Silent <strong>status</strong> and <code>code</code>!</p>"
+                "formatted_body": "<p>Silent <strong>status</strong> and <code>code</code>!</p>",
+                "m.mentions": {}
             })
         );
     }
 
     #[test]
     fn rejects_empty_or_whitespace_only_notice_body() {
-        assert!(build_markdown_message_content("", GatewayMessageType::Notice).is_none());
-        assert!(build_markdown_message_content("   \n\t  ", GatewayMessageType::Notice).is_none());
+        assert!(
+            build_markdown_message_content("", GatewayMessageType::Notice, Mentions::new())
+                .is_none()
+        );
+        assert!(
+            build_markdown_message_content(
+                "   \n\t  ",
+                GatewayMessageType::Notice,
+                Mentions::new()
+            )
+            .is_none()
+        );
     }
 }
