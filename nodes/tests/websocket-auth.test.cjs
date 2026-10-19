@@ -150,6 +150,55 @@ test('invalid mention metadata is rejected without breaking subsequent events', 
 	assert.equal(emitted.length, 1);
 });
 
+test('relates_to is optional and preserved for thread, reply, and edit events', async (t) => {
+	const { socket, emitted } = await start(t);
+	socket.open();
+	socket.message({ type: 'authenticated' });
+	for (const message_type of ['text', 'notice', 'image', 'audio']) {
+		for (const relates_to of [
+			undefined,
+			{ rel_type: 'thread', event_id: '$root:example.org' },
+			{ rel_type: 'reply', event_id: '$reply:example.org' },
+			{ rel_type: 'edit', event_id: '$edit:example.org' },
+		]) {
+			socket.message({
+				...roomEvent,
+				message_type,
+				...(relates_to === undefined ? {} : { relates_to }),
+			});
+			await delay(0);
+			const output = emitted.at(-1)[0][0].json;
+			assert.equal(output.message_type, message_type);
+			assert.deepEqual(output.relates_to, relates_to);
+			assert.equal(Object.hasOwn(output, 'relates_to'), relates_to !== undefined);
+		}
+	}
+	assert.equal(emitted.length, 16);
+});
+
+test('invalid relates_to metadata is rejected without breaking subsequent events', async (t) => {
+	const { socket, emitted } = await start(t);
+	socket.open();
+	socket.message({ type: 'authenticated' });
+	for (const relates_to of [
+		null,
+		[],
+		'invalid',
+		{},
+		{ rel_type: 'unknown', event_id: '$abc:example.org' },
+		{ rel_type: 'thread', event_id: 'not-an-event-id' },
+		{ rel_type: 'reply', event_id: '$' },
+		{ rel_type: 'edit', event_id: '$has space' },
+	]) {
+		socket.message({ ...roomEvent, relates_to });
+	}
+	await delay(0);
+	assert.equal(emitted.length, 0);
+	socket.message(roomEvent);
+	await delay(0);
+	assert.equal(emitted.length, 1);
+});
+
 test('formatted_body is preserved on text/notice events and rejected on image/audio or when malformed', async (t) => {
 	const { socket, emitted } = await start(t);
 	socket.open();
@@ -415,4 +464,198 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		},
 		json: true,
 	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'message',
+			roomId: '!room:example.org',
+			messageType: 'text',
+			message: 'Thread reply',
+			relationshipType: 'thread',
+			threadRootEventId: ' $root:example.org ',
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/text',
+		body: {
+			room_id: '!room:example.org',
+			body: 'Thread reply',
+			relates_to: {
+				rel_type: 'thread',
+				event_id: '$root:example.org',
+			},
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'message',
+			roomId: '!room:example.org',
+			messageType: 'notice',
+			message: 'Inline notice reply',
+			relationshipType: 'reply',
+			replyTargetEventId: '$target:example.org',
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/notice',
+		body: {
+			room_id: '!room:example.org',
+			body: 'Inline notice reply',
+			relates_to: {
+				rel_type: 'reply',
+				event_id: '$target:example.org',
+			},
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext(
+			{
+				operation: 'message',
+				roomId: '!room:example.org',
+				messageType: 'image',
+				binaryPropertyName: 'image',
+				caption: 'Threaded diagram',
+				relationshipType: 'thread',
+				threadRootEventId: '$root:example.org',
+			},
+			{
+				image: {
+					mimeType: 'image/png',
+					fileName: 'diagram.png',
+				},
+			},
+		),
+	);
+	{
+		const req = requests.at(-1);
+		const metadataPart = req.body.get('metadata');
+		assert.deepEqual(JSON.parse(await metadataPart.text()), {
+			room_id: '!room:example.org',
+			file_name: 'diagram.png',
+			body: 'Threaded diagram',
+			relates_to: {
+				rel_type: 'thread',
+				event_id: '$root:example.org',
+			},
+		});
+	}
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext(
+			{
+				operation: 'message',
+				roomId: '!room:example.org',
+				messageType: 'audio',
+				binaryPropertyName: 'audio',
+				caption: '',
+				relationshipType: 'reply',
+				replyTargetEventId: '$voice:example.org',
+			},
+			{
+				audio: {
+					mimeType: 'audio/ogg',
+				},
+			},
+		),
+	);
+	{
+		const req = requests.at(-1);
+		const metadataPart = req.body.get('metadata');
+		assert.deepEqual(JSON.parse(await metadataPart.text()), {
+			room_id: '!room:example.org',
+			file_name: 'audio-message.ogg',
+			relates_to: {
+				rel_type: 'reply',
+				event_id: '$voice:example.org',
+			},
+		});
+	}
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'editMessage',
+			roomId: '!room:example.org',
+			targetEventId: ' $original:example.org ',
+			messageType: 'text',
+			message: 'Updated **text**',
+			additionalFields: {
+				userIds: ['@alice:example.org'],
+			},
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/text',
+		body: {
+			room_id: '!room:example.org',
+			body: 'Updated **text**',
+			mentions: {
+				user_ids: ['@alice:example.org'],
+				room: false,
+			},
+			relates_to: {
+				rel_type: 'edit',
+				event_id: '$original:example.org',
+			},
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'editMessage',
+			roomId: '!room:example.org',
+			targetEventId: '$original_notice:example.org',
+			messageType: 'notice',
+			message: 'Updated notice',
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/notice',
+		body: {
+			room_id: '!room:example.org',
+			body: 'Updated notice',
+			relates_to: {
+				rel_type: 'edit',
+				event_id: '$original_notice:example.org',
+			},
+		},
+		json: true,
+	});
+
+	await assert.rejects(
+		() =>
+			MatrixE2ee.prototype.execute.call(
+				makeContext({
+					operation: 'message',
+					roomId: '!room:example.org',
+					messageType: 'text',
+					message: 'Missing thread event ID',
+					relationshipType: 'thread',
+					threadRootEventId: '   ',
+				}),
+			),
+		/Thread Root Event must not be empty/,
+	);
+
+	await assert.rejects(
+		() =>
+			MatrixE2ee.prototype.execute.call(
+				makeContext({
+					operation: 'editMessage',
+					roomId: '!room:example.org',
+					targetEventId: 'invalid-event-id',
+					messageType: 'text',
+					message: 'Invalid edit target',
+				}),
+			),
+		/Invalid Matrix event ID in Target Event/,
+	);
 });

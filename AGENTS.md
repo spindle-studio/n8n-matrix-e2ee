@@ -109,10 +109,10 @@ The API is intentionally private: expose it only to trusted n8n workloads.
 | --- | --- |
 | `GET /healthz` | Returns `200` after initialization |
 | `GET /v1/auth-check` | Returns `204` for a valid bearer token |
-| `POST /v1/messages/text` | Sends `{"room_id":"...","body":"...","mentions":{...}}` as `m.text` (converts Markdown to plain-text `body` and HTML `formatted_body`; `mentions` optional) |
-| `POST /v1/messages/notice` | Sends `{"room_id":"...","body":"...","mentions":{...}}` as `m.notice` (converts Markdown to plain-text `body` and HTML `formatted_body` without triggering notifications; `mentions` optional) |
-| `POST /v1/messages/image` | Sends `multipart/form-data` with a JSON `metadata` part (`room_id`, optional `file_name`, optional `body`, optional `mentions`) and a binary `media` image part |
-| `POST /v1/messages/audio` | Sends `multipart/form-data` with a JSON `metadata` part (`room_id`, optional `file_name`, optional `body`, optional `mentions`) and a binary `media` Ogg/Opus part as a stable `m.audio` message |
+| `POST /v1/messages/text` | Sends `{"room_id":"...","body":"...","mentions":{...},"relates_to":{...}}` as `m.text` (converts Markdown to plain-text `body` and HTML `formatted_body`; `mentions` and `relates_to` optional) |
+| `POST /v1/messages/notice` | Sends `{"room_id":"...","body":"...","mentions":{...},"relates_to":{...}}` as `m.notice` (converts Markdown to plain-text `body` and HTML `formatted_body` without triggering notifications; `mentions` and `relates_to` optional) |
+| `POST /v1/messages/image` | Sends `multipart/form-data` with a JSON `metadata` part (`room_id`, optional `file_name`, optional `body`, optional `mentions`, optional `relates_to`) and a binary `media` image part |
+| `POST /v1/messages/audio` | Sends `multipart/form-data` with a JSON `metadata` part (`room_id`, optional `file_name`, optional `body`, optional `mentions`, optional `relates_to`) and a binary `media` Ogg/Opus part as a stable `m.audio` message |
 | `POST /v1/typing` | Sets `{"room_id":"...","typing":true|false,"timeout_seconds":30}` (`timeout_seconds` optional when `typing: true`) |
 | `GET /v1/media` | Downloads supported media by room and event ID |
 | `GET /v1/ws` | Streams validated `room.message` events over WebSocket |
@@ -153,7 +153,17 @@ Outgoing text, notice, image, and audio messages always attach Matrix 1.6+
 back to legacy text-matching push rules). Any message request may include an
 optional `mentions` object (`{"room": true|false, "user_ids": ["@user:example.org"]}`);
 `user_ids` entries are validated as Matrix user IDs, trimmed, deduplicated, and
-sorted. Outgoing audio includes MSC3245 compatibility metadata for a voice marker and
+sorted.
+
+Message requests also support an optional `relates_to` object (`{"rel_type": "thread"|"reply"|"edit", "event_id": "$..."}`):
+
+- `thread` (supported for text, notice, image, and audio) injects `m.relates_to` with `rel_type: "m.thread"`, `event_id`, and `m.in_reply_to: {"event_id": "$..."}` into the unencrypted event content before Megolm encryption.
+- `reply` (supported for text, notice, image, and audio) injects `m.relates_to` with `m.in_reply_to: {"event_id": "$..."}`.
+- `edit` (supported for text and notice) constructs a Matrix `m.replace` event with `* `-prefixed top-level fallback `body`/`formatted_body`, clean replacement content in `m.new_content`, and `m.relates_to: {"rel_type": "m.replace", "event_id": "$..."}`.
+
+When incoming Matrix messages carry `m.thread`, `m.in_reply_to`, or `m.replace` relations, the WebSocket stream includes `relates_to: {"rel_type": "thread"|"reply"|"edit", "event_id": "$..."}` (using the clean `m.new_content` body, HTML formatting, and mentions for `m.replace` edits) and the n8n trigger validates and preserves `relates_to` in its JSON output.
+
+Outgoing audio includes MSC3245 compatibility metadata for a voice marker and
 waveform preview. Element X and compatible clients render it as a voice
 message, while other clients can fall back to generic audio attachments. The
 gateway filters events from its configured Matrix user. It automatically

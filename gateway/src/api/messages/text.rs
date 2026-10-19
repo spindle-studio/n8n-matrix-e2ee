@@ -7,8 +7,9 @@ use tracing::{error, info};
 use crate::gateway::AppState;
 
 use super::{
-    MentionsRequest, MessageActionResponse, event::GatewayMessageType, message_action_response,
-    resolve_mentions,
+    MentionsRequest, MessageActionResponse, RelatesTo, event::GatewayMessageType,
+    inject_relates_to_value, into_raw_room_message_content, message_action_response,
+    resolve_mentions, resolve_relates_to,
 };
 use crate::api::{
     auth::authorize_request,
@@ -22,6 +23,8 @@ pub(super) struct SendMarkdownRequest {
     body: String,
     #[serde(default)]
     mentions: Option<MentionsRequest>,
+    #[serde(default)]
+    relates_to: Option<RelatesTo>,
 }
 
 pub(super) async fn send_text(
@@ -40,8 +43,15 @@ pub(super) async fn send_markdown_message(
 ) -> ApiResult<Json<MessageActionResponse>> {
     authorize_request(&state.api_secret_token, &headers)?;
     let mentions = resolve_mentions(request.mentions)?;
-    let content = build_markdown_message_content(&request.body, gateway_message_type, mentions)
-        .ok_or_else(|| client_error("body must not be empty"))?;
+    let relates_to = resolve_relates_to(request.relates_to)?;
+    let payload = build_markdown_message_payload(
+        &request.body,
+        gateway_message_type,
+        mentions,
+        relates_to.as_ref(),
+    )
+    .ok_or_else(|| client_error("body must not be empty"))?;
+    let raw_content = into_raw_room_message_content(&payload)?;
 
     let room_id = parse_room_id(&request.room_id)?;
     let room = get_known_room(&state.client, &room_id)?;
@@ -50,7 +60,7 @@ pub(super) async fn send_markdown_message(
         message_type = gateway_message_type.as_str(),
         "sending Matrix message"
     );
-    let response = room.send(content).await.map_err(|error| {
+    let response = room.send_raw("m.room.message", raw_content).await.map_err(|error| {
         error!(%error, room_id = %room_id, "failed to send Matrix message");
         server_error("failed to send Matrix message")
     })?;
@@ -62,12 +72,56 @@ pub(super) async fn send_markdown_message(
     ))
 }
 
+#[cfg(test)]
 pub(super) fn build_markdown_message_content(
     markdown: &str,
     gateway_message_type: GatewayMessageType,
     mentions: Mentions,
 ) -> Option<RoomMessageEventContent> {
     let (plain_body, formatted_body) = compile_markdown(markdown)?;
+    build_html_message_content(plain_body, formatted_body, gateway_message_type, mentions)
+}
+
+pub(super) fn build_markdown_message_payload(
+    markdown: &str,
+    gateway_message_type: GatewayMessageType,
+    mentions: Mentions,
+    relates_to: Option<&RelatesTo>,
+) -> Option<serde_json::Value> {
+    let (plain_body, formatted_body) = compile_markdown(markdown)?;
+    let base_content = build_html_message_content(
+        plain_body.clone(),
+        formatted_body.clone(),
+        gateway_message_type,
+        mentions.clone(),
+    )?;
+    let base_json = serde_json::to_value(base_content).ok()?;
+
+    let content_json = if matches!(relates_to, Some(RelatesTo::Edit { .. })) {
+        let fallback_content = build_html_message_content(
+            format!("* {plain_body}"),
+            format!("* {formatted_body}"),
+            gateway_message_type,
+            mentions,
+        )?;
+        let mut fallback_json = serde_json::to_value(fallback_content).ok()?;
+        if let Some(obj) = fallback_json.as_object_mut() {
+            obj.insert("m.new_content".to_owned(), base_json);
+        }
+        fallback_json
+    } else {
+        base_json
+    };
+
+    Some(inject_relates_to_value(content_json, relates_to))
+}
+
+fn build_html_message_content(
+    plain_body: String,
+    formatted_body: String,
+    gateway_message_type: GatewayMessageType,
+    mentions: Mentions,
+) -> Option<RoomMessageEventContent> {
     let mut content = match gateway_message_type {
         GatewayMessageType::Text => Some(RoomMessageEventContent::text_html(
             plain_body,
@@ -190,6 +244,103 @@ mod tests {
                 Mentions::new()
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn builds_threaded_and_reply_text_payloads() {
+        let thread = RelatesTo::Thread {
+            event_id: "$root:example.org".to_owned(),
+        };
+        let payload = build_markdown_message_payload(
+            "Thread **update**",
+            GatewayMessageType::Text,
+            Mentions::new(),
+            Some(&thread),
+        )
+        .unwrap();
+
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "msgtype": "m.text",
+                "body": "Thread update",
+                "format": "org.matrix.custom.html",
+                "formatted_body": "<p>Thread <strong>update</strong></p>",
+                "m.mentions": {},
+                "m.relates_to": {
+                    "rel_type": "m.thread",
+                    "event_id": "$root:example.org",
+                    "m.in_reply_to": {
+                        "event_id": "$root:example.org"
+                    }
+                }
+            })
+        );
+
+        let reply = RelatesTo::Reply {
+            event_id: "$target:example.org".to_owned(),
+        };
+        let reply_payload = build_markdown_message_payload(
+            "Inline reply",
+            GatewayMessageType::Text,
+            Mentions::new(),
+            Some(&reply),
+        )
+        .unwrap();
+
+        assert_eq!(
+            reply_payload["m.relates_to"],
+            serde_json::json!({
+                "m.in_reply_to": {
+                    "event_id": "$target:example.org"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn builds_full_matrix_replacement_payload_for_edits() {
+        let mentions = resolve_mentions(Some(MentionsRequest {
+            user_ids: Some(vec!["@alice:example.org".to_owned()]),
+            room: Some(false),
+        }))
+        .unwrap();
+        let edit = RelatesTo::Edit {
+            event_id: "$original:example.org".to_owned(),
+        };
+        let payload = build_markdown_message_payload(
+            "Updated **text**",
+            GatewayMessageType::Text,
+            mentions,
+            Some(&edit),
+        )
+        .unwrap();
+
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "msgtype": "m.text",
+                "body": "* Updated text",
+                "format": "org.matrix.custom.html",
+                "formatted_body": "* <p>Updated <strong>text</strong></p>",
+                "m.mentions": {
+                    "user_ids": ["@alice:example.org"]
+                },
+                "m.new_content": {
+                    "msgtype": "m.text",
+                    "body": "Updated text",
+                    "format": "org.matrix.custom.html",
+                    "formatted_body": "<p>Updated <strong>text</strong></p>",
+                    "m.mentions": {
+                        "user_ids": ["@alice:example.org"]
+                    }
+                },
+                "m.relates_to": {
+                    "rel_type": "m.replace",
+                    "event_id": "$original:example.org"
+                }
+            })
         );
     }
 }

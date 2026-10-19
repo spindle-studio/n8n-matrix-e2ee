@@ -3,9 +3,15 @@ use axum::{
     extract::{Multipart, State},
     http::HeaderMap,
 };
-use matrix_sdk::{
-    attachment::{AttachmentConfig, AttachmentInfo, BaseImageInfo},
-    ruma::{UInt, events::room::message::TextMessageEventContent},
+use matrix_sdk::ruma::{
+    UInt,
+    events::{
+        Mentions,
+        room::{
+            ImageInfo, MediaSource,
+            message::{ImageMessageEventContent, MessageType, RoomMessageEventContent},
+        },
+    },
 };
 use mime::Mime;
 use tracing::{error, info};
@@ -20,8 +26,9 @@ use crate::{
 };
 
 use super::{
-    MessageActionResponse, event::GatewayMessageType, extract_multipart_media,
-    message_action_response, resolve_mentions,
+    MessageActionResponse, RelatesTo, event::GatewayMessageType, extract_multipart_media,
+    inject_relates_to_value, into_raw_room_message_content, message_action_response,
+    resolve_media_relates_to, resolve_mentions, upload_room_media,
 };
 
 pub(super) async fn send_image(
@@ -37,6 +44,7 @@ pub(super) async fn send_image(
 
     let content_type = validate_image_content_type(upload.content_type)?;
     let mentions = resolve_mentions(upload.metadata.mentions)?;
+    let relates_to = resolve_media_relates_to(upload.metadata.relates_to)?;
     let room_id = parse_room_id(&upload.metadata.room_id)?;
     let room = get_known_room(&state.client, &room_id)?;
     let file_name = resolved_file_name(
@@ -48,30 +56,65 @@ pub(super) async fn send_image(
         &content_type,
     );
     let message_body = trimmed_non_empty(upload.metadata.body.as_deref());
-
-    let mut attachment_config = AttachmentConfig::new()
-        .info(AttachmentInfo::Image(BaseImageInfo {
-            size: UInt::new(upload.data.len() as u64),
-            ..BaseImageInfo::default()
-        }))
-        .mentions(Some(mentions));
-    if let Some(message_body) = message_body {
-        attachment_config = attachment_config.caption(Some(TextMessageEventContent::plain(
-            message_body.to_owned(),
-        )));
-    }
+    let size_bytes = upload.data.len() as u64;
+    let source = upload_room_media(
+        &state.client,
+        &room,
+        &content_type,
+        upload.data.to_vec(),
+        "failed to upload Matrix image media",
+    )
+    .await?;
+    let payload = image_room_message_payload(
+        message_body,
+        file_name.clone(),
+        source,
+        &content_type,
+        size_bytes,
+        mentions,
+        relates_to.as_ref(),
+    )?;
+    let raw_content = into_raw_room_message_content(&payload)?;
 
     info!(room_id = %room_id, file_name, mime_type = %content_type, message_type = "image", "sending Matrix image message");
-    let response = room.send_attachment(file_name.clone(), &content_type, upload.data.to_vec(), attachment_config).await.map_err(|error| {
+    let response = room.send_raw("m.room.message", raw_content).await.map_err(|error| {
         error!(%error, room_id = %room_id, file_name, mime_type = %content_type, "failed to send Matrix image message");
         server_error("failed to send Matrix image message")
     })?;
 
     Ok(message_action_response(
         room_id.to_string(),
-        response.event_id.to_string(),
+        response.response.event_id.to_string(),
         GatewayMessageType::Image,
     ))
+}
+
+fn image_room_message_payload(
+    caption: Option<&str>,
+    file_name: String,
+    source: MediaSource,
+    content_type: &Mime,
+    size_bytes: u64,
+    mentions: Mentions,
+    relates_to: Option<&RelatesTo>,
+) -> ApiResult<serde_json::Value> {
+    let mut info = ImageInfo::new();
+    info.mimetype = Some(content_type.to_string());
+    info.size = UInt::new(size_bytes);
+
+    let body = caption.unwrap_or(&file_name).to_owned();
+    let mut content = ImageMessageEventContent::new(body, source);
+    if caption.is_some() {
+        content.filename = Some(file_name);
+    }
+    content.info = Some(Box::new(info));
+
+    let mut message = RoomMessageEventContent::new(MessageType::Image(content));
+    message.mentions = Some(mentions);
+
+    let json = serde_json::to_value(message)
+        .map_err(|_| server_error("failed to serialize Matrix image message content"))?;
+    Ok(inject_relates_to_value(json, relates_to))
 }
 
 fn validate_image_content_type(content_type: Option<Mime>) -> ApiResult<Mime> {
@@ -115,5 +158,47 @@ mod tests {
         assert!(validate_image_content_type(Some("image/png".parse().unwrap())).is_ok());
         assert!(validate_image_content_type(Some("audio/ogg".parse().unwrap())).is_err());
         assert!(validate_image_content_type(None).is_err());
+    }
+
+    #[test]
+    fn image_payload_includes_relates_to_and_mentions() {
+        use matrix_sdk::ruma::owned_mxc_uri;
+
+        let content_type: Mime = "image/png".parse().unwrap();
+        let thread = RelatesTo::Thread {
+            event_id: "$root:example.org".to_owned(),
+        };
+        let payload = image_room_message_payload(
+            Some("Architecture diagram"),
+            "diagram.png".to_owned(),
+            MediaSource::Plain(owned_mxc_uri!("mxc://example.org/image")),
+            &content_type,
+            128,
+            Mentions::new(),
+            Some(&thread),
+        )
+        .unwrap();
+
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "msgtype": "m.image",
+                "body": "Architecture diagram",
+                "filename": "diagram.png",
+                "url": "mxc://example.org/image",
+                "info": {
+                    "mimetype": "image/png",
+                    "size": 128
+                },
+                "m.mentions": {},
+                "m.relates_to": {
+                    "rel_type": "m.thread",
+                    "event_id": "$root:example.org",
+                    "m.in_reply_to": {
+                        "event_id": "$root:example.org"
+                    }
+                }
+            })
+        );
     }
 }

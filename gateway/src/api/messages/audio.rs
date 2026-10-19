@@ -5,18 +5,15 @@ use axum::{
     extract::{Multipart, State},
     http::HeaderMap,
 };
-use matrix_sdk::{
-    Room,
-    ruma::{
-        UInt,
-        events::{
-            Mentions,
-            room::{
-                MediaSource,
-                message::{
-                    AudioInfo, AudioMessageEventContent, MessageType, RoomMessageEventContent,
-                    UnstableAmplitude, UnstableAudioDetailsContentBlock, UnstableVoiceContentBlock,
-                },
+use matrix_sdk::ruma::{
+    UInt,
+    events::{
+        Mentions,
+        room::{
+            MediaSource,
+            message::{
+                AudioInfo, AudioMessageEventContent, MessageType, RoomMessageEventContent,
+                UnstableAmplitude, UnstableAudioDetailsContentBlock, UnstableVoiceContentBlock,
             },
         },
     },
@@ -36,8 +33,9 @@ use crate::{
 };
 
 use super::{
-    MessageActionResponse, event::GatewayMessageType, extract_multipart_media,
-    message_action_response, resolve_mentions,
+    MessageActionResponse, RelatesTo, event::GatewayMessageType, extract_multipart_media,
+    inject_relates_to_value, into_raw_room_message_content, message_action_response,
+    resolve_media_relates_to, resolve_mentions, upload_room_media,
 };
 
 const OPUS_SAMPLE_RATE: u32 = 48_000;
@@ -104,6 +102,7 @@ pub(super) async fn send_audio(
     }
 
     let mentions = resolve_mentions(upload.metadata.mentions)?;
+    let relates_to = resolve_media_relates_to(upload.metadata.relates_to)?;
     let metadata = extract_audio_metadata(&upload.data).map_err(|message| client_error(message))?;
     let room_id = parse_room_id(&upload.metadata.room_id)?;
     let room = get_known_room(&state.client, &room_id)?;
@@ -115,8 +114,15 @@ pub(super) async fn send_audio(
             .or(upload.part_file_name.as_deref()),
     );
     let message_body = audio_body(upload.metadata.body.as_deref());
-    let source = upload_audio_media(&state.client, &room, &content_type, upload.data.to_vec()).await?;
-    let content = audio_room_message_content(
+    let source = upload_room_media(
+        &state.client,
+        &room,
+        &content_type,
+        upload.data.to_vec(),
+        "failed to upload Matrix audio media",
+    )
+    .await?;
+    let payload = audio_room_message_payload(
         message_body,
         file_name.clone(),
         source,
@@ -124,11 +130,13 @@ pub(super) async fn send_audio(
         metadata.duration,
         metadata.waveform,
         mentions,
-    );
+        relates_to.as_ref(),
+    )?;
+    let raw_content = into_raw_room_message_content(&payload)?;
 
     info!(room_id = %room_id, file_name, message_type = "audio", "sending Matrix audio message");
     let response = room
-        .send(content)
+        .send_raw("m.room.message", raw_content)
         .await
         .map_err(|error| {
             error!(%error, room_id = %room_id, "failed to send Matrix audio message");
@@ -238,31 +246,6 @@ fn audio_body(value: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
-async fn upload_audio_media(
-    client: &matrix_sdk::Client,
-    room: &Room,
-    content_type: &Mime,
-    data: Vec<u8>,
-) -> ApiResult<MediaSource> {
-    if room.latest_encryption_state().await.map_err(|error| {
-        error!(%error, room_id = %room.room_id(), "failed to inspect Matrix room encryption state");
-        server_error("failed to inspect Matrix room encryption state")
-    })?.is_encrypted() {
-        let mut reader = Cursor::new(data);
-        let encrypted = client.upload_encrypted_file(&mut reader).await.map_err(|error| {
-            error!(%error, room_id = %room.room_id(), "failed to upload encrypted Matrix audio media");
-            server_error("failed to upload Matrix audio media")
-        })?;
-        Ok(MediaSource::Encrypted(Box::new(encrypted)))
-    } else {
-        let upload = client.media().upload(content_type, data, None).await.map_err(|error| {
-            error!(%error, room_id = %room.room_id(), "failed to upload Matrix audio media");
-            server_error("failed to upload Matrix audio media")
-        })?;
-        Ok(MediaSource::Plain(upload.content_uri))
-    }
-}
-
 fn audio_room_message_content(
     body: String,
     file_name: String,
@@ -286,6 +269,30 @@ fn audio_room_message_content(
     let mut message = RoomMessageEventContent::new(MessageType::Audio(content));
     message.mentions = Some(mentions);
     message
+}
+
+fn audio_room_message_payload(
+    body: String,
+    file_name: String,
+    source: MediaSource,
+    size_bytes: u64,
+    duration: Duration,
+    waveform: Vec<UnstableAmplitude>,
+    mentions: Mentions,
+    relates_to: Option<&RelatesTo>,
+) -> ApiResult<serde_json::Value> {
+    let content = audio_room_message_content(
+        body,
+        file_name,
+        source,
+        size_bytes,
+        duration,
+        waveform,
+        mentions,
+    );
+    let json = serde_json::to_value(content)
+        .map_err(|_| server_error("failed to serialize Matrix audio message content"))?;
+    Ok(inject_relates_to_value(json, relates_to))
 }
 
 #[cfg(test)]
@@ -360,5 +367,32 @@ mod tests {
     #[test]
     fn downmixing_averages_channels() {
         assert_eq!(downmix_pcm(&[1_000, 3_000, -2_000, 2_000], 2), [2_000, 0]);
+    }
+
+    #[test]
+    fn audio_payload_injects_relates_to() {
+        let reply = RelatesTo::Reply {
+            event_id: "$target:example.org".to_owned(),
+        };
+        let payload = audio_room_message_payload(
+            "Voice reply".to_owned(),
+            "audio.ogg".to_owned(),
+            MediaSource::Plain(owned_mxc_uri!("mxc://example.org/audio")),
+            42,
+            Duration::from_secs(3),
+            vec![UnstableAmplitude::new(0), UnstableAmplitude::new(1024)],
+            Mentions::new(),
+            Some(&reply),
+        )
+        .unwrap();
+
+        assert_eq!(
+            payload["m.relates_to"],
+            serde_json::json!({
+                "m.in_reply_to": {
+                    "event_id": "$target:example.org"
+                }
+            })
+        );
     }
 }

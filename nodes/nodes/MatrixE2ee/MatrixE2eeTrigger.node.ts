@@ -14,10 +14,16 @@ const MAX_RECONNECT_DELAY_MS = 30_000;
 const AUTH_TIMEOUT_MS = 10_000;
 
 type MatrixE2eeMessageType = 'text' | 'notice' | 'image' | 'audio';
+type MatrixE2eeRelationshipType = 'thread' | 'reply' | 'edit';
 
 interface MatrixE2eeMentions extends IDataObject {
 	user_ids: string[];
 	room: boolean;
+}
+
+interface MatrixE2eeRelatesTo extends IDataObject {
+	rel_type: MatrixE2eeRelationshipType;
+	event_id: string;
 }
 
 interface MatrixE2eeEvent extends IDataObject {
@@ -29,6 +35,7 @@ interface MatrixE2eeEvent extends IDataObject {
 	formatted_body?: string;
 	message_type: MatrixE2eeMessageType;
 	mentions?: MatrixE2eeMentions;
+	relates_to?: MatrixE2eeRelatesTo;
 	file_name?: string;
 	mime_type?: string;
 	size_bytes?: number;
@@ -85,6 +92,22 @@ function isMentions(value: unknown): value is MatrixE2eeMentions {
 	);
 }
 
+function isRelatesTo(value: unknown): value is MatrixE2eeRelatesTo {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+		return false;
+	}
+	const relatesTo = value as Record<string, unknown>;
+	return (
+		(relatesTo.rel_type === 'thread' ||
+			relatesTo.rel_type === 'reply' ||
+			relatesTo.rel_type === 'edit') &&
+		typeof relatesTo.event_id === 'string' &&
+		relatesTo.event_id.startsWith('$') &&
+		relatesTo.event_id.length > 1 &&
+		!/\s/.test(relatesTo.event_id)
+	);
+}
+
 function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined {
 	if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
 		return undefined;
@@ -136,6 +159,11 @@ function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined
 	}
 	const mentions = event.mentions;
 
+	if (event.relates_to !== undefined && !isRelatesTo(event.relates_to)) {
+		return undefined;
+	}
+	const relatesTo = event.relates_to;
+
 	const roomId = event.room_id as string;
 	const sender = event.sender as string;
 	const eventId = event.event_id as string;
@@ -159,6 +187,9 @@ function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined
 		...(mentions === undefined
 			? {}
 			: { mentions: { user_ids: [...mentions.user_ids], room: mentions.room } }),
+		...(relatesTo === undefined
+			? {}
+			: { relates_to: { rel_type: relatesTo.rel_type, event_id: relatesTo.event_id } }),
 		file_name: fileName,
 		mime_type: mimeType,
 		size_bytes: sizeBytes,
