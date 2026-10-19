@@ -10,6 +10,7 @@ use super::RelatesTo;
 pub(crate) enum GatewayMessageType {
     Text,
     Notice,
+    Emote,
     Image,
     Audio,
 }
@@ -19,6 +20,7 @@ impl GatewayMessageType {
         match self {
             Self::Text => "text",
             Self::Notice => "notice",
+            Self::Emote => "emote",
             Self::Image => "image",
             Self::Audio => "audio",
         }
@@ -66,6 +68,7 @@ pub(crate) fn gateway_message_type_label(message_type: &MessageType) -> &'static
     match message_type {
         MessageType::Text(_) => "text",
         MessageType::Notice(_) => "notice",
+        MessageType::Emote(_) => "emote",
         MessageType::Image(_) => "image",
         MessageType::Audio(_) => "audio",
         _ => "other",
@@ -139,6 +142,26 @@ pub(crate) fn room_message_content_to_gateway_event(
                 .map(|formatted| formatted.body.clone()),
             event_id: event_id.to_owned(),
             message_type: GatewayMessageType::Notice,
+            mentions,
+            relates_to,
+            file_name: None,
+            mime_type: None,
+            size_bytes: None,
+            width: None,
+            height: None,
+            duration_seconds: None,
+        }),
+        MessageType::Emote(content) => Some(GatewayEvent::Message {
+            room_id: room_id.to_owned(),
+            sender: sender.to_owned(),
+            body: content.body.clone(),
+            formatted_body: content
+                .formatted
+                .as_ref()
+                .filter(|formatted| formatted.format == MessageFormat::Html)
+                .map(|formatted| formatted.body.clone()),
+            event_id: event_id.to_owned(),
+            message_type: GatewayMessageType::Emote,
             mentions,
             relates_to,
             file_name: None,
@@ -257,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn text_and_notice_gateway_events_include_html_formatted_body() {
+    fn text_notice_and_emote_gateway_events_include_html_formatted_body() {
         for (message, expected_type) in [
             (
                 RoomMessageEventContent::text_html("Hello world", "<p>Hello <b>world</b></p>"),
@@ -266,6 +289,10 @@ mod tests {
             (
                 RoomMessageEventContent::notice_html("Hello world", "<p>Hello <b>world</b></p>"),
                 "notice",
+            ),
+            (
+                RoomMessageEventContent::emote_html("Hello world", "<p>Hello <b>world</b></p>"),
+                "emote",
             ),
         ] {
             let event = room_message_content_to_gateway_event(
@@ -381,7 +408,7 @@ mod tests {
     }
     #[test]
     fn forwards_structured_mentions_for_all_supported_message_types() {
-        for msgtype in ["m.text", "m.notice", "m.image", "m.audio"] {
+        for msgtype in ["m.text", "m.notice", "m.emote", "m.image", "m.audio"] {
             for (metadata, expected) in [
                 (
                     serde_json::json!({}),
@@ -423,7 +450,7 @@ mod tests {
 
     #[test]
     fn does_not_infer_mentions_from_body_or_formatted_text() {
-        for msgtype in ["m.text", "m.notice", "m.image", "m.audio"] {
+        for msgtype in ["m.text", "m.notice", "m.emote", "m.image", "m.audio"] {
             let content: RoomMessageEventContent = serde_json::from_value(serde_json::json!({
                 "msgtype": msgtype,
                 "body": "@room @ben:example.org",
@@ -450,7 +477,7 @@ mod tests {
 
     #[test]
     fn forwards_thread_and_reply_relationships_for_all_supported_message_types() {
-        for msgtype in ["m.text", "m.notice", "m.image", "m.audio"] {
+        for msgtype in ["m.text", "m.notice", "m.emote", "m.image", "m.audio"] {
             let thread_content: RoomMessageEventContent = serde_json::from_value(serde_json::json!({
                 "msgtype": msgtype,
                 "body": "Threaded reply",
@@ -513,7 +540,11 @@ mod tests {
 
     #[test]
     fn forwards_edit_relationship_using_clean_new_content() {
-        for (msgtype, expected_type) in [("m.text", "text"), ("m.notice", "notice")] {
+        for (msgtype, expected_type) in [
+            ("m.text", "text"),
+            ("m.notice", "notice"),
+            ("m.emote", "emote"),
+        ] {
             let edit_content: RoomMessageEventContent = serde_json::from_value(serde_json::json!({
                 "msgtype": msgtype,
                 "body": "* Edited message",

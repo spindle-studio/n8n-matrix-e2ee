@@ -131,6 +131,10 @@ fn build_html_message_content(
             plain_body,
             formatted_body,
         )),
+        GatewayMessageType::Emote => Some(RoomMessageEventContent::emote_html(
+            plain_body,
+            formatted_body,
+        )),
         GatewayMessageType::Image | GatewayMessageType::Audio => None,
     }?;
     content.mentions = Some(mentions);

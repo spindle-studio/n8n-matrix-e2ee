@@ -111,6 +111,7 @@ The API is intentionally private: expose it only to trusted n8n workloads.
 | `GET /v1/auth-check` | Returns `204` for a valid bearer token |
 | `POST /v1/messages/text` | Sends `{"room_id":"...","body":"...","mentions":{...},"relates_to":{...}}` as `m.text` (converts Markdown to plain-text `body` and HTML `formatted_body`; `mentions` and `relates_to` optional) |
 | `POST /v1/messages/notice` | Sends `{"room_id":"...","body":"...","mentions":{...},"relates_to":{...}}` as `m.notice` (converts Markdown to plain-text `body` and HTML `formatted_body` without triggering notifications; `mentions` and `relates_to` optional) |
+| `POST /v1/messages/emote` | Sends `{"room_id":"...","body":"...","mentions":{...},"relates_to":{...}}` as `m.emote` (converts Markdown to plain-text `body` and HTML `formatted_body`; `mentions` and `relates_to` optional) |
 | `POST /v1/messages/image` | Sends `multipart/form-data` with a JSON `metadata` part (`room_id`, optional `file_name`, optional `body`, optional `mentions`, optional `relates_to`) and a binary `media` image part |
 | `POST /v1/messages/audio` | Sends `multipart/form-data` with a JSON `metadata` part (`room_id`, optional `file_name`, optional `body`, optional `mentions`, optional `relates_to`) and a binary `media` Ogg/Opus part as a stable `m.audio` message |
 | `POST /v1/typing` | Sets `{"room_id":"...","typing":true|false,"timeout_seconds":30}` (`timeout_seconds` optional when `typing: true`) |
@@ -126,8 +127,8 @@ WebSocket connections. Incoming frames/messages are limited to 4 KiB and at most
 response and authenticate again after reconnecting. Use WSS outside trusted
 networks; never log authentication payloads. HTTP authentication is unchanged.
 
-The WebSocket stream provides text, notice, image, and audio events. All include
-`room_id`, `sender`, `event_id`, `body`, and `message_type`; text and notice events include
+The WebSocket stream provides text, notice, emote, image, and audio events. All include
+`room_id`, `sender`, `event_id`, `body`, and `message_type`; text, notice, and emote events include
 `formatted_body` when Matrix supplies `org.matrix.custom.html` formatting, and
 media events can also include file, MIME, size, image-dimension, and duration
 metadata. When Matrix supplies `m.mentions`, events also include a `mentions`
@@ -140,7 +141,7 @@ object:
 `user_ids` contains the mentioned Matrix IDs (unique and sorted); `room` indicates
 an `@room` mention. Both fields are present when `mentions` is present, defaulting
 to `[]` and `false`. Missing Matrix metadata omits `mentions` entirely, preserving
-the distinction from an explicitly empty mentions object. Text, notice, image, and audio
+the distinction from an explicitly empty mentions object. Text, notice, emote, image, and audio
 messages use the same format. Mentions are never inferred from message text.
 This is sender-provided metadata, not proof of notification delivery or permission
 to notify the room. The n8n trigger preserves this optional object in its JSON output. Events from
@@ -148,7 +149,7 @@ older gateways without `mentions` remain valid. When present, `mentions` must
 contain a string array `user_ids` and a boolean `room`; malformed metadata is
 rejected by the trigger like other invalid event fields.
 
-Outgoing text, notice, image, and audio messages always attach Matrix 1.6+
+Outgoing text, notice, emote, image, and audio messages always attach Matrix 1.6+
 `m.mentions` metadata (defaulting to `{}` so homeservers and clients do not fall
 back to legacy text-matching push rules). Any message request may include an
 optional `mentions` object (`{"room": true|false, "user_ids": ["@user:example.org"]}`);
@@ -157,9 +158,9 @@ sorted.
 
 Message requests also support an optional `relates_to` object (`{"rel_type": "thread"|"reply"|"edit", "event_id": "$..."}`):
 
-- `thread` (supported for text, notice, image, and audio) injects `m.relates_to` with `rel_type: "m.thread"`, `event_id`, and `m.in_reply_to: {"event_id": "$..."}` into the unencrypted event content before Megolm encryption.
-- `reply` (supported for text, notice, image, and audio) injects `m.relates_to` with `m.in_reply_to: {"event_id": "$..."}`.
-- `edit` (supported for text and notice) constructs a Matrix `m.replace` event with `* `-prefixed top-level fallback `body`/`formatted_body`, clean replacement content in `m.new_content`, and `m.relates_to: {"rel_type": "m.replace", "event_id": "$..."}`.
+- `thread` (supported for text, notice, emote, image, and audio) injects `m.relates_to` with `rel_type: "m.thread"`, `event_id`, and `m.in_reply_to: {"event_id": "$..."}` into the unencrypted event content before Megolm encryption.
+- `reply` (supported for text, notice, emote, image, and audio) injects `m.relates_to` with `m.in_reply_to: {"event_id": "$..."}`.
+- `edit` (supported for text, notice, and emote) constructs a Matrix `m.replace` event with `* `-prefixed top-level fallback `body`/`formatted_body`, clean replacement content in `m.new_content`, and `m.relates_to: {"rel_type": "m.replace", "event_id": "$..."}`.
 
 When incoming Matrix messages carry `m.thread`, `m.in_reply_to`, or `m.replace` relations, the WebSocket stream includes `relates_to: {"rel_type": "thread"|"reply"|"edit", "event_id": "$..."}` (using the clean `m.new_content` body, HTML formatting, and mentions for `m.replace` edits) and the n8n trigger validates and preserves `relates_to` in its JSON output.
 

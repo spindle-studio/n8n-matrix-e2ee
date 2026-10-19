@@ -113,11 +113,11 @@ test('reconnect authenticates again and shutdown cancels reconnect', async (t) =
 });
 
 
-test('mentions are optional and preserved for text, notice, image, and audio events', async (t) => {
+test('mentions are optional and preserved for text, notice, emote, image, and audio events', async (t) => {
 	const { socket, emitted } = await start(t);
 	socket.open();
 	socket.message({ type: 'authenticated' });
-	for (const message_type of ['text', 'notice', 'image', 'audio']) {
+	for (const message_type of ['text', 'notice', 'emote', 'image', 'audio']) {
 		for (const mentions of [undefined, { user_ids: [], room: false },
 			{ user_ids: ['@ben:example.org'], room: false },
 			{ user_ids: [], room: true },
@@ -131,7 +131,7 @@ test('mentions are optional and preserved for text, notice, image, and audio eve
 			assert.equal(Object.hasOwn(output, 'future_field'), false);
 		}
 	}
-	assert.equal(emitted.length, 20);
+	assert.equal(emitted.length, 25);
 });
 
 test('invalid mention metadata is rejected without breaking subsequent events', async (t) => {
@@ -154,7 +154,7 @@ test('relates_to is optional and preserved for thread, reply, and edit events', 
 	const { socket, emitted } = await start(t);
 	socket.open();
 	socket.message({ type: 'authenticated' });
-	for (const message_type of ['text', 'notice', 'image', 'audio']) {
+	for (const message_type of ['text', 'notice', 'emote', 'image', 'audio']) {
 		for (const relates_to of [
 			undefined,
 			{ rel_type: 'thread', event_id: '$root:example.org' },
@@ -173,7 +173,7 @@ test('relates_to is optional and preserved for thread, reply, and edit events', 
 			assert.equal(Object.hasOwn(output, 'relates_to'), relates_to !== undefined);
 		}
 	}
-	assert.equal(emitted.length, 16);
+	assert.equal(emitted.length, 20);
 });
 
 test('invalid relates_to metadata is rejected without breaking subsequent events', async (t) => {
@@ -199,35 +199,39 @@ test('invalid relates_to metadata is rejected without breaking subsequent events
 	assert.equal(emitted.length, 1);
 });
 
-test('formatted_body is preserved on text/notice events and rejected on image/audio or when malformed', async (t) => {
+test('formatted_body is preserved on text/notice/emote events and rejected on image/audio or when malformed', async (t) => {
 	const { socket, emitted } = await start(t);
 	socket.open();
 	socket.message({ type: 'authenticated' });
 
 	socket.message({ ...roomEvent, message_type: 'text', formatted_body: '<p><strong>hello</strong></p>' });
 	socket.message({ ...roomEvent, message_type: 'notice', formatted_body: '<p><em>notice</em></p>' });
+	socket.message({ ...roomEvent, message_type: 'emote', formatted_body: '<p>waves <strong>excitedly</strong></p>' });
 	await delay(0);
-	assert.equal(emitted.length, 2);
+	assert.equal(emitted.length, 3);
 	assert.equal(emitted[0][0][0].json.formatted_body, '<p><strong>hello</strong></p>');
 	assert.equal(emitted[1][0][0].json.message_type, 'notice');
 	assert.equal(emitted[1][0][0].json.formatted_body, '<p><em>notice</em></p>');
+	assert.equal(emitted[2][0][0].json.message_type, 'emote');
+	assert.equal(emitted[2][0][0].json.formatted_body, '<p>waves <strong>excitedly</strong></p>');
 
 	for (const invalidEvent of [
 		{ ...roomEvent, message_type: 'text', formatted_body: 123 },
 		{ ...roomEvent, message_type: 'notice', formatted_body: 123 },
+		{ ...roomEvent, message_type: 'emote', formatted_body: 123 },
 		{ ...roomEvent, message_type: 'image', formatted_body: '<b>caption</b>' },
 		{ ...roomEvent, message_type: 'audio', formatted_body: '<b>caption</b>' },
 	]) {
 		socket.message(invalidEvent);
 	}
 	await delay(0);
-	assert.equal(emitted.length, 2);
+	assert.equal(emitted.length, 3);
 
 	socket.message({ ...roomEvent, message_type: 'text' });
 	await delay(0);
-	assert.equal(emitted.length, 3);
-	assert.equal(Object.hasOwn(emitted[2][0][0].json, 'formatted_body'), false);
-	assert.equal(Object.hasOwn(emitted[2][0][0].json, 'caption'), false);
+	assert.equal(emitted.length, 4);
+	assert.equal(Object.hasOwn(emitted[3][0][0].json, 'formatted_body'), false);
+	assert.equal(Object.hasOwn(emitted[3][0][0].json, 'caption'), false);
 });
 
 test('consolidated action node sends text, notice, image, audio, and typing requests', async () => {
@@ -324,6 +328,31 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		body: {
 			room_id: '!room:example.org',
 			body: 'Silent **notice**',
+			mentions: {
+				user_ids: ['@alice:example.org'],
+				room: false,
+			},
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'message',
+			roomId: '!room:example.org',
+			messageType: 'emote',
+			message: 'waves **hello**',
+			additionalFields: {
+				userIds: ['@alice:example.org'],
+			},
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/emote',
+		body: {
+			room_id: '!room:example.org',
+			body: 'waves **hello**',
 			mentions: {
 				user_ids: ['@alice:example.org'],
 				room: false,
@@ -625,6 +654,29 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 			relates_to: {
 				rel_type: 'edit',
 				event_id: '$original_notice:example.org',
+			},
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			operation: 'editMessage',
+			roomId: '!room:example.org',
+			targetEventId: '$original_emote:example.org',
+			messageType: 'emote',
+			message: 'waves **again**',
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/messages/emote',
+		body: {
+			room_id: '!room:example.org',
+			body: 'waves **again**',
+			relates_to: {
+				rel_type: 'edit',
+				event_id: '$original_emote:example.org',
 			},
 		},
 		json: true,
