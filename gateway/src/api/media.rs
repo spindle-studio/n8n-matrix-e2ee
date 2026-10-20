@@ -22,7 +22,7 @@ use crate::gateway::AppState;
 use super::{
     auth::authorize_request,
     error::{ApiResult, client_error, server_error},
-    room::{get_known_room, parse_event_id, parse_room_id},
+    room::{parse_event_id, resolve_known_room},
 };
 
 #[derive(Debug, Deserialize)]
@@ -73,9 +73,9 @@ pub(super) async fn download_media(
     Query(query): Query<MediaDownloadQuery>,
 ) -> ApiResult<Response> {
     authorize_request(&state.api_secret_token, &headers)?;
-    let room_id = parse_room_id(&query.room_id)?;
     let event_id = parse_event_id(&query.event_id)?;
-    let room = get_known_room(&state.client, &room_id)?;
+    let room = resolve_known_room(&state.client, &query.room_id).await?;
+    let room_id = room.room_id().to_owned();
     let event = room.event(&event_id, None).await.map_err(|error| {
         error!(%error, room_id = %room_id, event_id = %event_id, "failed to fetch Matrix event");
         server_error("failed to fetch Matrix event")

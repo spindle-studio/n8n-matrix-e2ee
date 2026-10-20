@@ -1,4 +1,4 @@
-use std::{collections::HashSet, env, path::PathBuf};
+use std::{env, path::PathBuf};
 
 use thiserror::Error;
 
@@ -11,7 +11,6 @@ pub(crate) struct Config {
     pub(crate) matrix_user: String,
     pub(crate) matrix_password: String,
     pub(crate) api_secret_token: String,
-    pub(crate) allowed_inviters: HashSet<String>,
     pub(crate) port: u16,
     pub(crate) data_dir: PathBuf,
 }
@@ -38,9 +37,6 @@ impl Config {
             matrix_user: required("MATRIX_USER")?,
             matrix_password: required("MATRIX_PASSWORD")?,
             api_secret_token: required("API_SECRET_TOKEN")?,
-            allowed_inviters: parse_allowed_inviters(
-                &env::var("ALLOWED_INVITERS").unwrap_or_default(),
-            ),
             port: env::var("PORT")
                 .ok()
                 .map(|value| value.parse())
@@ -54,15 +50,6 @@ impl Config {
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_DIR)),
         })
     }
-}
-
-fn parse_allowed_inviters(value: &str) -> HashSet<String> {
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
 }
 
 #[cfg(test)]
@@ -79,7 +66,6 @@ mod tests {
     fn configuration_uses_optional_defaults() {
         let _guard = env_lock().lock().expect("env lock should not be poisoned");
         unsafe {
-            env::remove_var("ALLOWED_INVITERS");
             env::remove_var("API_SECRET_TOKEN");
             env::remove_var("PORT");
             env::remove_var("DATA_DIR");
@@ -93,7 +79,6 @@ mod tests {
 
         assert_eq!(config.homeserver_url, "https://matrix.example.org");
         assert_eq!(config.api_secret_token, "gateway-secret");
-        assert!(config.allowed_inviters.is_empty());
         assert_eq!(config.port, DEFAULT_PORT);
         assert_eq!(config.data_dir, PathBuf::from(DEFAULT_DATA_DIR));
     }
@@ -147,15 +132,5 @@ mod tests {
             Config::from_env(),
             Err(ConfigError::MissingEnvironment("API_SECRET_TOKEN"))
         ));
-    }
-
-    #[test]
-    fn allowed_inviter_parser_trims_and_deduplicates_entries() {
-        let inviters =
-            parse_allowed_inviters(" @alice:example.org, ,@bob:example.org,@alice:example.org ");
-
-        assert_eq!(inviters.len(), 2);
-        assert!(inviters.contains("@alice:example.org"));
-        assert!(inviters.contains("@bob:example.org"));
     }
 }

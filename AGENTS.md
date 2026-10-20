@@ -13,8 +13,7 @@ developer workflows, API contracts, and troubleshooting here.
 ## Local development
 
 Requirements: Rust, Node.js 22.4 or later/npm, and Docker or Podman. Copy `gateway/.env.example` to
-`.env` and configure a real Matrix bot account, homeserver, API token, and
-allowed inviters. Never commit `.env`, Matrix session files, encryption stores,
+`.env` and configure a real Matrix bot account, homeserver, and API token. Never commit `.env`, Matrix session files, encryption stores,
 or real credentials.
 
 Build and test the gateway:
@@ -80,8 +79,7 @@ Read its `.agents/` guidance before modifying nodes or credentials.
 ## Gateway configuration and state
 
 `HOMESERVER_URL`, `MATRIX_USER`, `MATRIX_PASSWORD`, and `API_SECRET_TOKEN` are
-required. `ALLOWED_INVITERS` is a comma-separated allowlist; unset or empty
-means no invitation is authorized. `PORT` defaults to `8080`. `DATA_DIR`
+required. `PORT` defaults to `8080`. `DATA_DIR`
 defaults to `/data` (set `DATA_DIR=./data` when running locally outside a
 container).
 
@@ -116,9 +114,15 @@ The API is intentionally private: expose it only to trusted n8n workloads.
 | `POST /v1/messages/audio` | Sends `multipart/form-data` with a JSON `metadata` part (`room_id`, optional `file_name`, optional `body`, optional `mentions`, optional `relates_to`) and a binary `media` Ogg/Opus part as a stable `m.audio` message |
 | `POST /v1/messages/reaction` | Sends `{"room_id":"...","event_id":"$...","key":"👍"}` as an `m.reaction` (`m.annotation`) event targeting `event_id` |
 | `POST /v1/messages/redact` | Sends `{"room_id":"...","event_id":"$...","reason":"..."}` as an `m.room.redaction` event redacting `event_id` (`reason` optional) |
+| `POST /v1/room/join` | Joins a room by room ID or alias (`{"room_id":"!room:example.org"}`) and returns `{"room_id":"!room:example.org"}` |
+| `POST /v1/room/invite` | Invites one or more users to a joined room by room ID or alias (`{"room_id":"!room:example.org","user_ids":["@user:example.org"],"reason":"..."}`, `reason` optional) and returns `{"room_id":"!room:example.org"}` |
+| `POST /v1/room/leave` | Leaves a joined or invited room by room ID or alias (`{"room_id":"!room:example.org","reason":"..."}`, `reason` optional) and returns `{"success":true}` |
+| `POST /v1/room/create` | Creates a room (`{"name":"...","visibility":"private"|"public","topic":"...","room_alias_name":"...","invite":["@user:example.org"],"is_encrypted":true}`) and returns `{"room_id":"!room:example.org"}` |
 | `POST /v1/typing` | Sets `{"room_id":"...","typing":true|false,"timeout_seconds":30}` (`timeout_seconds` optional when `typing: true`) |
 | `GET /v1/media` | Downloads supported media by room and event ID |
-| `GET /v1/ws` | Streams validated `room.message` and `reaction` events over WebSocket |
+| `GET /v1/ws` | Streams validated `room.message`, `reaction`, and `room.invite` events over WebSocket |
+
+All routes that accept `room_id` accept either a Matrix room ID (`!room:example.org`) or a room alias (`#alias:example.org`).
 
 WebSocket clients must send `{"type":"authenticate","token":"<API_SECRET_TOKEN>"}`
 within five seconds. The gateway replies `{"type":"authenticated"}` before
@@ -164,14 +168,12 @@ Message requests also support an optional `relates_to` object (`{"rel_type": "th
 - `reply` (supported for text, notice, emote, image, and audio) injects `m.relates_to` with `m.in_reply_to: {"event_id": "$..."}`.
 - `edit` (supported for text, notice, and emote) constructs a Matrix `m.replace` event with `* `-prefixed top-level fallback `body`/`formatted_body`, clean replacement content in `m.new_content`, and `m.relates_to: {"rel_type": "m.replace", "event_id": "$..."}`.
 
-When incoming Matrix messages carry `m.thread`, `m.in_reply_to`, or `m.replace` relations, the WebSocket stream includes `relates_to: {"rel_type": "thread"|"reply"|"edit", "event_id": "$..."}` (using the clean `m.new_content` body, HTML formatting, and mentions for `m.replace` edits) and the n8n trigger validates and preserves `relates_to` in its JSON output. Incoming `m.reaction` events are streamed with `event_type: "reaction"`, `room_id`, `sender`, `event_id`, `key`, and `relates_to: {"rel_type": "annotation", "event_id": "$...", "key": "..."}`.
+When incoming Matrix messages carry `m.thread`, `m.in_reply_to`, or `m.replace` relations, the WebSocket stream includes `relates_to: {"rel_type": "thread"|"reply"|"edit", "event_id": "$..."}` (using the clean `m.new_content` body, HTML formatting, and mentions for `m.replace` edits) and the n8n trigger validates and preserves `relates_to` in its JSON output. Incoming `m.reaction` events are streamed with `event_type: "reaction"`, `room_id`, `sender`, `event_id`, `key`, and `relates_to: {"rel_type": "annotation", "event_id": "$...", "key": "..."}`. Incoming room invitations for the gateway user are streamed with `event_type: "room.invite"`, `room_id`, and `sender` so workflows can accept (`POST /v1/room/join`) or reject (`POST /v1/room/leave`) them in n8n.
 
 Outgoing audio includes MSC3245 compatibility metadata for a voice marker and
 waveform preview. Element X and compatible clients render it as a voice
 message, while other clients can fall back to generic audio attachments. The
-gateway filters events from its configured Matrix user. It automatically
-accepts invitations only from `ALLOWED_INVITERS` and reconciles allowed
-invitations pending at startup.
+gateway filters events from its configured Matrix user.
 
 ## Branch naming
 

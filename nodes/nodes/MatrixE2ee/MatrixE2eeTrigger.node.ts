@@ -59,7 +59,16 @@ interface MatrixE2eeReactionEvent extends IDataObject {
 	relates_to: MatrixE2eeReactionRelatesTo;
 }
 
-type MatrixE2eeEvent = MatrixE2eeMessageEvent | MatrixE2eeReactionEvent;
+interface MatrixE2eeInviteEvent extends IDataObject {
+	event_type: 'room.invite';
+	room_id: string;
+	sender: string;
+}
+
+type MatrixE2eeEvent =
+	| MatrixE2eeMessageEvent
+	| MatrixE2eeReactionEvent
+	| MatrixE2eeInviteEvent;
 
 export function getGatewayWebSocketUrl(baseUrl: string): string {
 	const parsedUrl = new URL(baseUrl.trim());
@@ -149,6 +158,18 @@ function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined
 	}
 
 	const event = payload as Record<string, unknown>;
+
+	if (event.event_type === 'room.invite') {
+		if (!['room_id', 'sender'].every((field) => isNonEmptyString(event[field]))) {
+			return undefined;
+		}
+
+		return {
+			event_type: 'room.invite',
+			room_id: event.room_id as string,
+			sender: event.sender as string,
+		};
+	}
 
 	if (event.event_type === 'reaction') {
 		if (
@@ -353,7 +374,7 @@ export class MatrixE2eeTrigger implements INodeType {
 		},
 		group: ['trigger'],
 		version: [1],
-		subtitle: 'New Matrix message',
+		subtitle: 'New message',
 		description: 'Send and receive encrypted Matrix messages',
 		defaults: {
 			name: 'Matrix E2EE Trigger',

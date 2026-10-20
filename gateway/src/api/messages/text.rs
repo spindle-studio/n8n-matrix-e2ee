@@ -14,7 +14,7 @@ use super::{
 use crate::api::{
     auth::authorize_request,
     error::{ApiResult, client_error, server_error},
-    room::{get_known_room, parse_room_id},
+    room::resolve_known_room,
 };
 
 #[derive(Debug, Deserialize)]
@@ -53,8 +53,8 @@ pub(super) async fn send_markdown_message(
     .ok_or_else(|| client_error("body must not be empty"))?;
     let raw_content = into_raw_room_message_content(&payload)?;
 
-    let room_id = parse_room_id(&request.room_id)?;
-    let room = get_known_room(&state.client, &room_id)?;
+    let room = resolve_known_room(&state.client, &request.room_id).await?;
+    let room_id = room.room_id().to_owned();
     info!(
         room_id = %room_id,
         message_type = gateway_message_type.as_str(),

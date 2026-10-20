@@ -20,7 +20,7 @@ use crate::{
     api::{
         auth::authorize_request,
         error::{ApiResult, client_error, server_error},
-        room::{get_known_room, parse_room_id},
+        room::resolve_known_room,
     },
     gateway::AppState,
 };
@@ -45,8 +45,8 @@ pub(super) async fn send_image(
     let content_type = validate_image_content_type(upload.content_type)?;
     let mentions = resolve_mentions(upload.metadata.mentions)?;
     let relates_to = resolve_media_relates_to(upload.metadata.relates_to)?;
-    let room_id = parse_room_id(&upload.metadata.room_id)?;
-    let room = get_known_room(&state.client, &room_id)?;
+    let room = resolve_known_room(&state.client, &upload.metadata.room_id).await?;
+    let room_id = room.room_id().to_owned();
     let file_name = resolved_file_name(
         upload
             .metadata

@@ -64,17 +64,11 @@ pub(crate) async fn initialize_gateway(config: &Config) -> anyhow::Result<AppSta
         .ok_or_else(|| anyhow::anyhow!("logged-in Matrix client has no user id"))?;
 
     let (events, _) = broadcast::channel(256);
-    sync::register_event_handlers(
-        &client,
-        events.clone(),
-        config.allowed_inviters.clone(),
-        own_user_id,
-    );
+    sync::register_event_handlers(&client, events.clone(), own_user_id);
 
     let sync_client = client.clone();
-    let allowed_inviters = config.allowed_inviters.clone();
     tokio::spawn(async move {
-        sync::run_sync_loop(sync_client, allowed_inviters).await;
+        sync::run_sync_loop(sync_client).await;
     });
 
     Ok(AppState {

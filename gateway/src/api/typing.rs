@@ -12,7 +12,7 @@ use crate::gateway::AppState;
 use super::{
     auth::authorize_request,
     error::{ApiResult, client_error, server_error},
-    room::{get_known_room, parse_room_id},
+    room::resolve_known_room,
 };
 
 const DEFAULT_TYPING_TIMEOUT_SECONDS: u64 = 30;
@@ -56,8 +56,8 @@ pub(super) async fn set_typing(
     authorize_request(&state.api_secret_token, &headers)?;
     let (typing_state, resolved_timeout_seconds) =
         resolve_typing_state(request.typing, request.timeout_seconds)?;
-    let room_id = parse_room_id(&request.room_id)?;
-    let room = get_known_room(&state.client, &room_id)?;
+    let room = resolve_known_room(&state.client, &request.room_id).await?;
+    let room_id = room.room_id().to_owned();
 
     info!(
         room_id = %room_id,

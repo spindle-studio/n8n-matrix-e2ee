@@ -10,7 +10,7 @@ use crate::{
     api::{
         auth::authorize_request,
         error::{ApiResult, client_error, server_error},
-        room::{get_known_room, parse_room_id},
+        room::resolve_known_room,
     },
     gateway::AppState,
 };
@@ -39,8 +39,8 @@ pub(super) async fn send_reaction(
     let (target_event_id, key) = validate_reaction_request(&request.event_id, &request.key)?;
     let content = ReactionEventContent::new(Annotation::new(target_event_id.clone(), key.clone()));
 
-    let room_id = parse_room_id(&request.room_id)?;
-    let room = get_known_room(&state.client, &room_id)?;
+    let room = resolve_known_room(&state.client, &request.room_id).await?;
+    let room_id = room.room_id().to_owned();
     info!(
         room_id = %room_id,
         target_event_id = %target_event_id,
