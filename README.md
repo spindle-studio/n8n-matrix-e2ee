@@ -3,7 +3,7 @@
 Send and receive messages in encrypted Matrix rooms from n8n.
 
 The **gateway** connects to Matrix and stores the bot's session and encryption
-keys. The **n8n nodes** connect to the gateway to send text, notices, emotes, images, audio, and reactions, delete messages or reactions, set typing indicators, or start a workflow when a message or reaction arrives.
+keys. The **n8n nodes** connect to the gateway to create, join, invite users to, or leave rooms, send text, notices, emotes, images, audio, and reactions, delete messages or reactions, set typing indicators, or start a workflow when a message, reaction, or room invitation arrives.
 
 ## Getting started
 
@@ -20,12 +20,9 @@ HOMESERVER_URL=https://matrix.example.org
 MATRIX_USER=@n8n-bot:example.org
 MATRIX_PASSWORD=your-bot-password
 API_SECRET_TOKEN=your-random-api-token
-ALLOWED_INVITERS=@you:example.org
 ```
 
 Generate the API token with `openssl rand -hex 32`. Keep `.env` private.
-`ALLOWED_INVITERS` is a comma-separated list of people who can invite the bot
-to rooms. Leave it empty to reject all invitations.
 
 ### 2. Start the gateway
 
@@ -78,15 +75,14 @@ Test and save the credentials.
 
 ### 4. Receive your first message
 
-Invite the bot to a room from an account listed in `ALLOWED_INVITERS`.
 Add **Matrix E2EE Trigger** to a workflow, select your credentials, and click
-**Listen for test event**. Send a new message to the room.
+**Listen for test event**. Invite the bot to a room (or join a room with the **Matrix E2EE** `Room > Join` operation) and send a new message.
 
-The trigger receives text, notice, emote, image, and audio messages as well as reactions, and can download media for
-later steps. It only receives messages while listening; earlier messages aren't
-replayed. Messages sent by the bot itself are ignored.
+The trigger receives text, notice, emote, image, and audio messages, reactions, and room invitations (`room.invite`), and can download media for
+later steps. It only receives events while listening; earlier events aren't
+replayed. Events sent by the bot itself are ignored.
 
-Use **Matrix E2EE** to send, edit, or delete a message, react to a message, or set a typing indicator.
+Use **Matrix E2EE** to create, join, invite users to, or leave a room, send, edit, or delete a message, react to a message, or set a typing indicator.
 
 ## Compatibility
 

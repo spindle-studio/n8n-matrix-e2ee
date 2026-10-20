@@ -24,6 +24,7 @@ pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/auth-check", get(auth::auth_check))
         .nest("/messages", messages::router())
+        .nest("/room", room::router())
         .route("/typing", post(typing::set_typing))
         .route("/media", get(media::download_media))
         .route("/ws", get(websocket::websocket))

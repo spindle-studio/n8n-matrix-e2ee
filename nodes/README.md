@@ -19,24 +19,22 @@ then create **Matrix E2EE Gateway API** credentials:
   `http://n8n-matrix-e2ee-gateway:8080` on a shared container network.
 - **API Token:** the gateway's `API_SECRET_TOKEN`.
 
-Test and save the credentials. Invite the bot to a Matrix room from an account
-listed in the gateway's `ALLOWED_INVITERS`.
+Test and save the credentials.
 
 ## Use the nodes
 
-**Matrix E2EE Trigger** starts a workflow when a text, notice, emote, image, or audio message
+**Matrix E2EE Trigger** starts a workflow when a text, notice, emote, image, or audio message, reaction, or room invitation (`room.invite`)
 arrives. To try it, add the trigger, select your credentials, click
-**Listen for test event**, and send a new message to the room. Messages received
-before the trigger connects aren't replayed, and the bot's own messages are ignored.
+**Listen for test event**, and send a new message or room invite to the bot. Events received
+before the trigger connects aren't replayed, and the bot's own events are ignored.
 
 Enable **Download Media** to pass received media to later nodes as binary data.
 Choose its output field with **Output Data Field Name**.
 
-**Matrix E2EE** sends text, notices, emotes, images, and Ogg/Opus audio, or sets a typing indicator.
-For example, connect it after the trigger to reply to an incoming message using
-that message's `room_id`. Images and audio are read from n8n binary data.
-Compatible Matrix clients display outgoing audio as a voice message; others show
-an audio attachment.
+**Matrix E2EE** supports two resources:
+
+- **Message:** send text, notices, emotes, images, and Ogg/Opus audio, edit or delete messages, send reactions, or set a typing indicator.
+- **Room:** create a room, invite users to a room, join a room by ID or alias, or leave a room.
 
 ## Requirements
 

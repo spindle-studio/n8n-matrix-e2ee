@@ -80,6 +80,11 @@ pub(crate) enum GatewayEvent {
         key: String,
         relates_to: ReactionRelatesTo,
     },
+    #[serde(rename = "room.invite")]
+    Invite {
+        room_id: String,
+        sender: String,
+    },
 }
 
 pub(crate) fn reaction_content_to_gateway_event(
@@ -690,6 +695,22 @@ mod tests {
                 &empty_content,
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn serializes_room_invite_events() {
+        let event = GatewayEvent::Invite {
+            room_id: "!room:example.org".to_owned(),
+            sender: "@inviter:example.org".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::json!({
+                "event_type": "room.invite",
+                "room_id": "!room:example.org",
+                "sender": "@inviter:example.org"
+            })
         );
     }
 }

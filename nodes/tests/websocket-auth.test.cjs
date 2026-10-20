@@ -235,6 +235,34 @@ test('reaction events are preserved and malformed reaction events are rejected',
 	assert.equal(emitted.length, 1);
 });
 
+test('room.invite events are preserved and malformed invite events are rejected', async (t) => {
+	const { socket, emitted } = await start(t);
+	socket.open();
+	socket.message({ type: 'authenticated' });
+
+	const inviteEvent = {
+		event_type: 'room.invite',
+		room_id: '!room:example.org',
+		sender: '@inviter:example.org',
+	};
+	socket.message({ ...inviteEvent, future_field: true });
+	await delay(0);
+	assert.equal(emitted.length, 1);
+	assert.deepEqual(emitted[0][0][0].json, inviteEvent);
+	assert.equal(emitted[0][0][0].binary, undefined);
+
+	for (const invalidInvite of [
+		{ ...inviteEvent, room_id: '   ' },
+		{ ...inviteEvent, sender: '   ' },
+		{ event_type: 'room.invite', room_id: '!room:example.org' },
+		{ event_type: 'room.invite', sender: '@inviter:example.org' },
+	]) {
+		socket.message(invalidInvite);
+	}
+	await delay(0);
+	assert.equal(emitted.length, 1);
+});
+
 test('formatted_body is preserved on text/notice/emote events and rejected on image/audio or when malformed', async (t) => {
 	const { socket, emitted } = await start(t);
 	socket.open();
@@ -279,7 +307,7 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 			apiToken: 'test-secret',
 		}),
 		getNodeParameter: (name, _index, fallback) =>
-			name in params ? params[name] : fallback,
+			name in params ? params[name] : name === 'resource' ? 'message' : fallback,
 		getNode: () => ({
 			name: 'Matrix E2EE',
 			type: 'matrixE2ee',
@@ -491,7 +519,7 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 					},
 				}),
 			),
-		/Invalid Matrix user ID/,
+		/Invalid user ID/,
 	);
 
 	await MatrixE2ee.prototype.execute.call(
@@ -744,7 +772,7 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 					message: 'Invalid edit target',
 				}),
 			),
-		/Invalid Matrix event ID in Target Event/,
+		/Invalid event ID in Target Event/,
 	);
 
 	await MatrixE2ee.prototype.execute.call(
@@ -867,6 +895,246 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 					targetEventId: 'invalid-event-id',
 				}),
 			),
-		/Invalid Matrix event ID in Target Event/,
+		/Invalid event ID in Target Event/,
+	);
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			resource: 'room',
+			operation: 'join',
+			roomId: ' #alias:example.org ',
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/room/join',
+		body: {
+			room_id: '#alias:example.org',
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			resource: 'room',
+			operation: 'leave',
+			roomId: ' #alias:example.org ',
+			additionalFields: {
+				reason: '  Workflow completed successfully  ',
+			},
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/room/leave',
+		body: {
+			room_id: '#alias:example.org',
+			reason: 'Workflow completed successfully',
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			resource: 'room',
+			operation: 'leave',
+			roomId: '!roomid:example.org',
+			additionalFields: {
+				reason: '   ',
+			},
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/room/leave',
+		body: {
+			room_id: '!roomid:example.org',
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			resource: 'room',
+			operation: 'create',
+			name: ' Incident #402 - Auth Outage ',
+			visibility: 'private',
+			additionalFields: {
+				topic: ' War room for production incident response ',
+				roomAliasName: ' incident-402 ',
+				invite: [' @bob:example.org ', '', ' @alice:example.org '],
+				isEncrypted: true,
+			},
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/room/create',
+		body: {
+			name: 'Incident #402 - Auth Outage',
+			visibility: 'private',
+			topic: 'War room for production incident response',
+			room_alias_name: 'incident-402',
+			invite: ['@alice:example.org', '@bob:example.org'],
+			is_encrypted: true,
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			resource: 'room',
+			operation: 'create',
+			name: 'Public Announcements',
+			visibility: 'public',
+			additionalFields: {
+				isEncrypted: false,
+			},
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/room/create',
+		body: {
+			name: 'Public Announcements',
+			visibility: 'public',
+			is_encrypted: false,
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			resource: 'room',
+			operation: 'invite',
+			roomId: ' #alias:example.org ',
+			userIds: [' @bob:example.org ', '', ' @alice:example.org ', '@bob:example.org'],
+			additionalFields: {
+				reason: '  Join the incident bridge  ',
+			},
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/room/invite',
+		body: {
+			room_id: '#alias:example.org',
+			user_ids: ['@alice:example.org', '@bob:example.org'],
+			reason: 'Join the incident bridge',
+		},
+		json: true,
+	});
+
+	await MatrixE2ee.prototype.execute.call(
+		makeContext({
+			resource: 'room',
+			operation: 'invite',
+			roomId: '!roomid:example.org',
+			userIds: '@alice:example.org, @charlie:example.org',
+			additionalFields: {
+				reason: '   ',
+			},
+		}),
+	);
+	assert.deepEqual(requests.at(-1), {
+		method: 'POST',
+		url: 'https://gateway.example.org/v1/room/invite',
+		body: {
+			room_id: '!roomid:example.org',
+			user_ids: ['@alice:example.org', '@charlie:example.org'],
+		},
+		json: true,
+	});
+
+	await assert.rejects(
+		() =>
+			MatrixE2ee.prototype.execute.call(
+				makeContext({
+					resource: 'room',
+					operation: 'invite',
+					roomId: '   ',
+					userIds: ['@alice:example.org'],
+				}),
+			),
+		/Room must not be empty/,
+	);
+
+	await assert.rejects(
+		() =>
+			MatrixE2ee.prototype.execute.call(
+				makeContext({
+					resource: 'room',
+					operation: 'invite',
+					roomId: '!room:example.org',
+					userIds: ['   '],
+				}),
+			),
+		/Invite Users must contain at least one user ID/,
+	);
+
+	await assert.rejects(
+		() =>
+			MatrixE2ee.prototype.execute.call(
+				makeContext({
+					resource: 'room',
+					operation: 'invite',
+					roomId: '!room:example.org',
+					userIds: ['@alice:example.org', 'not-a-user'],
+				}),
+			),
+		/Invalid user ID in Invite Users/,
+	);
+
+	await assert.rejects(
+		() =>
+			MatrixE2ee.prototype.execute.call(
+				makeContext({
+					resource: 'room',
+					operation: 'join',
+					roomId: '   ',
+				}),
+			),
+		/Room must not be empty/,
+	);
+
+	await assert.rejects(
+		() =>
+			MatrixE2ee.prototype.execute.call(
+				makeContext({
+					resource: 'room',
+					operation: 'leave',
+					roomId: '   ',
+				}),
+			),
+		/Room must not be empty/,
+	);
+
+	await assert.rejects(
+		() =>
+			MatrixE2ee.prototype.execute.call(
+				makeContext({
+					resource: 'room',
+					operation: 'create',
+					name: '   ',
+					visibility: 'private',
+				}),
+			),
+		/Room Name must not be empty/,
+	);
+
+	await assert.rejects(
+		() =>
+			MatrixE2ee.prototype.execute.call(
+				makeContext({
+					resource: 'room',
+					operation: 'create',
+					name: 'Incident Room',
+					visibility: 'private',
+					additionalFields: {
+						invite: '@alice:example.org, invalid-user',
+					},
+				}),
+			),
+		/Invalid user ID in Invite Users/,
 	);
 });

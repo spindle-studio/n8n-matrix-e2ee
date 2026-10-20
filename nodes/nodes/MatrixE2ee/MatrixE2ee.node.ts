@@ -45,6 +45,7 @@ export const messageRelationshipProperties: INodeProperties[] = [
 		type: 'options',
 		displayOptions: {
 			show: {
+				resource: ['message'],
 				operation: ['message'],
 			},
 		},
@@ -78,6 +79,7 @@ export const messageRelationshipProperties: INodeProperties[] = [
 		description: 'The $event_id of the initial message that started the thread',
 		displayOptions: {
 			show: {
+				resource: ['message'],
 				operation: ['message'],
 				relationshipType: ['thread'],
 			},
@@ -93,6 +95,7 @@ export const messageRelationshipProperties: INodeProperties[] = [
 		description: 'The $event_id of the specific message you are replying to',
 		displayOptions: {
 			show: {
+				resource: ['message'],
 				operation: ['message'],
 				relationshipType: ['reply'],
 			},
@@ -102,14 +105,14 @@ export const messageRelationshipProperties: INodeProperties[] = [
 
 const mentionProperties: INodeProperties[] = [
 	{
-		displayName: 'Room Mention',
+		displayName: 'Mention Room',
 		name: 'roomMention',
 		type: 'boolean',
 		default: false,
-		description: 'Whether to trigger an @room mention notification (Matrix m.mentions.room)',
+		description: 'Whether to trigger an @room mention notification',
 	},
 	{
-		displayName: 'User Mentions',
+		displayName: 'Mention Users',
 		name: 'userIds',
 		type: 'string',
 		default: [],
@@ -118,7 +121,7 @@ const mentionProperties: INodeProperties[] = [
 			multipleValues: true,
 			multipleValueButtonText: 'Add User',
 		},
-		description: 'Matrix user IDs to mention in the message (Matrix m.mentions.user_ids)',
+		description: 'User IDs to mention in the message',
 	},
 ];
 
@@ -156,6 +159,22 @@ export function getGatewayRedactUrl(baseUrl: string): string {
 
 export function getGatewayTypingUrl(baseUrl: string): string {
 	return getGatewayApiUrl(baseUrl, '/v1/typing');
+}
+
+export function getGatewayJoinRoomUrl(baseUrl: string): string {
+	return getGatewayApiUrl(baseUrl, '/v1/room/join');
+}
+
+export function getGatewayLeaveRoomUrl(baseUrl: string): string {
+	return getGatewayApiUrl(baseUrl, '/v1/room/leave');
+}
+
+export function getGatewayCreateRoomUrl(baseUrl: string): string {
+	return getGatewayApiUrl(baseUrl, '/v1/room/create');
+}
+
+export function getGatewayInviteRoomUrl(baseUrl: string): string {
+	return getGatewayApiUrl(baseUrl, '/v1/room/invite');
 }
 
 function trimmedOrUndefined(value: string): string | undefined {
@@ -223,7 +242,7 @@ function resolveValidatedEventId(
 	if (!isValidMatrixEventId(trimmed)) {
 		throw new NodeOperationError(
 			this.getNode(),
-			`Invalid Matrix event ID in ${fieldLabel}: "${trimmed}". Expected an ID starting with $.`,
+			`Invalid event ID in ${fieldLabel}: "${trimmed}". Expected an ID starting with $.`,
 			{ itemIndex },
 		);
 	}
@@ -279,26 +298,19 @@ function resolveOutgoingRelatesTo(
 	}
 }
 
-function resolveOutgoingMentions(
+function resolveValidatedUserIds(
 	this: IExecuteFunctions,
-	additionalFields: IDataObject | undefined,
+	rawUserIds: unknown,
+	fieldLabel: string,
 	itemIndex: number,
-): IDataObject | undefined {
-	if (additionalFields === undefined) {
-		return undefined;
-	}
-
-	const hasRoomMention = additionalFields.roomMention !== undefined;
-	const room = Boolean(additionalFields.roomMention);
-	const rawUserIds = additionalFields.userIds;
-
-	let userIds: string[] = [];
+): string[] {
+	const userIds: string[] = [];
 	if (Array.isArray(rawUserIds)) {
 		for (const entry of rawUserIds) {
 			if (typeof entry !== 'string') {
 				throw new NodeOperationError(
 					this.getNode(),
-					'User Mentions entries must be Matrix user ID strings (for example @alice:example.org).',
+					`${fieldLabel} entries must be user ID strings (for example @alice:example.org).`,
 					{ itemIndex },
 				);
 			}
@@ -309,7 +321,7 @@ function resolveOutgoingMentions(
 			if (!isValidMatrixUserId(trimmed)) {
 				throw new NodeOperationError(
 					this.getNode(),
-					`Invalid Matrix user ID in User Mentions: "${trimmed}". Expected @user:domain.`,
+					`Invalid user ID in ${fieldLabel}: "${trimmed}". Expected @user:domain.`,
 					{ itemIndex },
 				);
 			}
@@ -324,7 +336,7 @@ function resolveOutgoingMentions(
 			if (!isValidMatrixUserId(trimmed)) {
 				throw new NodeOperationError(
 					this.getNode(),
-					`Invalid Matrix user ID in User Mentions: "${trimmed}". Expected @user:domain.`,
+					`Invalid user ID in ${fieldLabel}: "${trimmed}". Expected @user:domain.`,
 					{ itemIndex },
 				);
 			}
@@ -333,12 +345,31 @@ function resolveOutgoingMentions(
 	} else if (rawUserIds !== undefined) {
 		throw new NodeOperationError(
 			this.getNode(),
-			'User Mentions must be a list of Matrix user IDs.',
+			`${fieldLabel} must be a list of user IDs.`,
 			{ itemIndex },
 		);
 	}
 
-	userIds = [...new Set(userIds)].sort();
+	return [...new Set(userIds)].sort();
+}
+
+function resolveOutgoingMentions(
+	this: IExecuteFunctions,
+	additionalFields: IDataObject | undefined,
+	itemIndex: number,
+): IDataObject | undefined {
+	if (additionalFields === undefined) {
+		return undefined;
+	}
+
+	const hasRoomMention = additionalFields.roomMention !== undefined;
+	const room = Boolean(additionalFields.roomMention);
+	const userIds = resolveValidatedUserIds.call(
+		this,
+		additionalFields.userIds,
+		'Mention Users',
+		itemIndex,
+	);
 
 	if (!hasRoomMention && userIds.length === 0) {
 		return undefined;
@@ -381,7 +412,7 @@ export class MatrixE2ee implements INodeType {
 		group: ['output'],
 		version: [1],
 		subtitle:
-			'={{$parameter["operation"] === "typingIndicator" ? "Set typing indicator" : $parameter["operation"] === "reaction" ? "Send reaction" : $parameter["operation"] === "redact" ? "Delete message" : $parameter["operation"] === "editMessage" ? ($parameter["messageType"] === "notice" ? "Edit notice" : $parameter["messageType"] === "emote" ? "Edit emote" : "Edit message") : $parameter["messageType"] === "notice" ? "Send notice" : $parameter["messageType"] === "emote" ? "Send emote" : $parameter["messageType"] === "image" ? "Send image" : $parameter["messageType"] === "audio" ? "Send audio" : "Send message"}}',
+			'={{$parameter["resource"] === "room" ? ($parameter["operation"] === "create" ? "Create room" : $parameter["operation"] === "invite" ? "Invite to room" : $parameter["operation"] === "leave" ? "Leave room" : "Join room") : $parameter["operation"] === "typingIndicator" ? "Set typing indicator" : $parameter["operation"] === "reaction" ? "Send reaction" : $parameter["operation"] === "redact" ? "Delete message" : $parameter["operation"] === "editMessage" ? ($parameter["messageType"] === "notice" ? "Edit notice" : $parameter["messageType"] === "emote" ? "Edit emote" : "Edit message") : $parameter["messageType"] === "notice" ? "Send notice" : $parameter["messageType"] === "emote" ? "Send emote" : $parameter["messageType"] === "image" ? "Send image" : $parameter["messageType"] === "audio" ? "Send audio" : "Send message"}}',
 		description: 'Send and receive encrypted Matrix messages',
 		defaults: {
 			name: 'Matrix E2EE',
@@ -397,10 +428,32 @@ export class MatrixE2ee implements INodeType {
 		],
 		properties: [
 			{
+				displayName: 'Resource',
+				name: 'resource',
+				type: 'options',
+				noDataExpression: true,
+				options: [
+					{
+						name: 'Message',
+						value: 'message',
+					},
+					{
+						name: 'Room',
+						value: 'room',
+					},
+				],
+				default: 'message',
+			},
+			{
 				displayName: 'Operation',
 				name: 'operation',
 				type: 'options',
 				noDataExpression: true,
+				displayOptions: {
+					show: {
+						resource: ['message'],
+					},
+				},
 				options: [
 					{
 						name: 'Delete Message',
@@ -436,13 +489,215 @@ export class MatrixE2ee implements INodeType {
 				default: 'message',
 			},
 			{
+				displayName: 'Operation',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						resource: ['room'],
+					},
+				},
+				options: [
+					{
+						name: 'Create',
+						value: 'create',
+						action: 'Create a room',
+						description: 'Create a new room',
+					},
+					{
+						name: 'Invite',
+						value: 'invite',
+						action: 'Invite users to a room',
+						description: 'Invite one or more users to a room',
+					},
+					{
+						name: 'Join',
+						value: 'join',
+						action: 'Join a room',
+						description: 'Join an existing room',
+					},
+					{
+						name: 'Leave',
+						value: 'leave',
+						action: 'Leave a room',
+						description: 'Leave a room',
+					},
+				],
+				default: 'join',
+			},
+			{
 				displayName: 'Room',
 				name: 'roomId',
 				type: 'string',
 				required: true,
 				default: '',
-				placeholder: '!room:example.org',
-				description: 'The Matrix room ID that will receive the message or typing indicator',
+				placeholder: '!room:example.org or #alias:example.org',
+				description: 'The room ID or alias',
+				displayOptions: {
+					show: {
+						resource: ['room'],
+						operation: ['invite', 'join', 'leave'],
+					},
+				},
+			},
+			{
+				displayName: 'Invite Users',
+				name: 'userIds',
+				type: 'string',
+				required: true,
+				default: [],
+				placeholder: '@alice:example.org',
+				typeOptions: {
+					multipleValues: true,
+					multipleValueButtonText: 'Add User',
+				},
+				description: 'User IDs to invite to the room',
+				displayOptions: {
+					show: {
+						resource: ['room'],
+						operation: ['invite'],
+					},
+				},
+			},
+			{
+				displayName: 'Additional Fields',
+				name: 'additionalFields',
+				type: 'collection',
+				placeholder: 'Add Field',
+				default: {},
+				displayOptions: {
+					show: {
+						resource: ['room'],
+						operation: ['invite'],
+					},
+				},
+				options: [
+					{
+						displayName: 'Reason',
+						name: 'reason',
+						type: 'string',
+						default: '',
+						description: 'Optional reason for inviting the users to the room',
+					},
+				],
+			},
+			{
+				displayName: 'Additional Fields',
+				name: 'additionalFields',
+				type: 'collection',
+				placeholder: 'Add Field',
+				default: {},
+				displayOptions: {
+					show: {
+						resource: ['room'],
+						operation: ['leave'],
+					},
+				},
+				options: [
+					{
+						displayName: 'Reason',
+						name: 'reason',
+						type: 'string',
+						default: '',
+						description: 'Optional reason for leaving the room',
+					},
+				],
+			},
+			{
+				displayName: 'Room Name',
+				name: 'name',
+				type: 'string',
+				required: true,
+				default: '',
+				description: 'The display name for the new room',
+				displayOptions: {
+					show: {
+						resource: ['room'],
+						operation: ['create'],
+					},
+				},
+			},
+			{
+				displayName: 'Visibility',
+				name: 'visibility',
+				type: 'options',
+				options: [
+					// eslint-disable-next-line n8n-nodes-base/node-param-display-name-miscased
+					{ name: 'Private (invite only)', value: 'private' },
+					{ name: 'Public', value: 'public' },
+				],
+				default: 'private',
+				description: 'Whether the room is listed in the server directory',
+				displayOptions: {
+					show: {
+						resource: ['room'],
+						operation: ['create'],
+					},
+				},
+			},
+			{
+				displayName: 'Additional Fields',
+				name: 'additionalFields',
+				type: 'collection',
+				placeholder: 'Add Setting',
+				default: {},
+				displayOptions: {
+					show: {
+						resource: ['room'],
+						operation: ['create'],
+					},
+				},
+				options: [
+					{
+						displayName: 'Alias',
+						name: 'roomAliasName',
+						type: 'string',
+						default: '',
+						description:
+							'Short alias name for the room (e.g. "general" creates #general:example.org)',
+					},
+					{
+						displayName: 'Enable Encryption (E2EE)',
+						name: 'isEncrypted',
+						type: 'boolean',
+						default: true,
+						description: 'Whether to enable end-to-end encryption in the room',
+					},
+					{
+						displayName: 'Invite Users',
+						name: 'invite',
+						type: 'string',
+						default: [],
+						placeholder: '@alice:example.org',
+						typeOptions: {
+							multipleValues: true,
+							multipleValueButtonText: 'Add User',
+						},
+						description: 'User IDs to invite on creation',
+					},
+					{
+						displayName: 'Topic',
+						name: 'topic',
+						type: 'string',
+						default: '',
+						description: 'Room description/topic string',
+					},
+				],
+			},
+			{
+				displayName: 'Room',
+				name: 'roomId',
+				type: 'string',
+				required: true,
+				default: '',
+				placeholder: '!room:example.org or #alias:example.org',
+				displayOptions: {
+					show: {
+						resource: ['message'],
+					},
+				},
+				description: 'The room ID or alias that will receive the message or typing indicator',
 			},
 			{
 				displayName: 'Target Event',
@@ -453,11 +708,12 @@ export class MatrixE2ee implements INodeType {
 				placeholder: '$abc123xyz...',
 				displayOptions: {
 					show: {
+						resource: ['message'],
 						operation: ['editMessage', 'reaction', 'redact'],
 					},
 				},
 				description:
-					'The Matrix $event_id of the existing message or reaction to edit, react to, or delete',
+					'The $event_id of the existing message or reaction to edit, react to, or delete',
 			},
 			{
 				displayName: 'Reaction',
@@ -466,6 +722,7 @@ export class MatrixE2ee implements INodeType {
 				required: true,
 				displayOptions: {
 					show: {
+						resource: ['message'],
 						operation: ['reaction'],
 					},
 				},
@@ -481,6 +738,7 @@ export class MatrixE2ee implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
+						resource: ['message'],
 						operation: ['reaction'],
 						reaction: ['custom'],
 					},
@@ -494,6 +752,7 @@ export class MatrixE2ee implements INodeType {
 				noDataExpression: true,
 				displayOptions: {
 					show: {
+						resource: ['message'],
 						operation: ['message'],
 					},
 				},
@@ -526,7 +785,7 @@ export class MatrixE2ee implements INodeType {
 					},
 				],
 				default: 'text',
-				description: 'The type of Matrix message to send',
+				description: 'The type of message to send',
 			},
 			{
 				displayName: 'Message Type',
@@ -535,6 +794,7 @@ export class MatrixE2ee implements INodeType {
 				noDataExpression: true,
 				displayOptions: {
 					show: {
+						resource: ['message'],
 						operation: ['editMessage'],
 					},
 				},
@@ -558,7 +818,7 @@ export class MatrixE2ee implements INodeType {
 					},
 				],
 				default: 'text',
-				description: 'The type of Matrix message to send for the edit',
+				description: 'The type of message to send for the edit',
 			},
 			{
 				displayName: 'Message',
@@ -571,6 +831,7 @@ export class MatrixE2ee implements INodeType {
 				},
 				displayOptions: {
 					show: {
+						resource: ['message'],
 						operation: ['message', 'editMessage'],
 						messageType: ['text', 'notice', 'emote'],
 					},
@@ -588,6 +849,7 @@ export class MatrixE2ee implements INodeType {
 				},
 				displayOptions: {
 					show: {
+						resource: ['message'],
 						operation: ['message'],
 						messageType: ['image', 'audio'],
 					},
@@ -604,11 +866,12 @@ export class MatrixE2ee implements INodeType {
 				},
 				displayOptions: {
 					show: {
+						resource: ['message'],
 						operation: ['message'],
 						messageType: ['image', 'audio'],
 					},
 				},
-				description: 'Optional caption to send with the image or audio (maps to Matrix body)',
+				description: 'Optional caption to send with the image or audio',
 			},
 			...messageRelationshipProperties,
 			{
@@ -619,6 +882,7 @@ export class MatrixE2ee implements INodeType {
 				default: {},
 				displayOptions: {
 					show: {
+						resource: ['message'],
 						operation: ['message', 'editMessage'],
 					},
 				},
@@ -632,6 +896,7 @@ export class MatrixE2ee implements INodeType {
 				default: {},
 				displayOptions: {
 					show: {
+						resource: ['message'],
 						operation: ['redact'],
 					},
 				},
@@ -653,6 +918,7 @@ export class MatrixE2ee implements INodeType {
 				default: 'start',
 				displayOptions: {
 					show: {
+						resource: ['message'],
 						operation: ['typingIndicator'],
 					},
 				},
@@ -683,6 +949,7 @@ export class MatrixE2ee implements INodeType {
 				},
 				displayOptions: {
 					show: {
+						resource: ['message'],
 						operation: ['typingIndicator'],
 						typingState: ['start'],
 					},
@@ -707,13 +974,217 @@ export class MatrixE2ee implements INodeType {
 
 		for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
 			try {
+				const resource = this.getNodeParameter('resource', itemIndex) as string;
 				const operation = this.getNodeParameter('operation', itemIndex) as string;
+				let responseData: unknown;
+
+				if (resource === 'room') {
+					switch (operation) {
+						case 'join': {
+							const rawRoomId = this.getNodeParameter('roomId', itemIndex);
+							if (typeof rawRoomId !== 'string' || rawRoomId.trim().length === 0) {
+								throw new NodeOperationError(this.getNode(), 'Room must not be empty.', {
+									itemIndex,
+								});
+							}
+
+							responseData = await this.helpers.httpRequestWithAuthentication.call(
+								this,
+								'matrixE2eeApi',
+								{
+									method: 'POST',
+									url: getGatewayJoinRoomUrl(baseUrl),
+									body: {
+										room_id: rawRoomId.trim(),
+									},
+									json: true,
+								},
+							);
+							break;
+						}
+						case 'invite': {
+							const rawRoomId = this.getNodeParameter('roomId', itemIndex);
+							if (typeof rawRoomId !== 'string' || rawRoomId.trim().length === 0) {
+								throw new NodeOperationError(this.getNode(), 'Room must not be empty.', {
+									itemIndex,
+								});
+							}
+							const userIds = resolveValidatedUserIds.call(
+								this,
+								this.getNodeParameter('userIds', itemIndex),
+								'Invite Users',
+								itemIndex,
+							);
+							if (userIds.length === 0) {
+								throw new NodeOperationError(
+									this.getNode(),
+									'Invite Users must contain at least one user ID.',
+									{ itemIndex },
+								);
+							}
+							const additionalFields = this.getNodeParameter(
+								'additionalFields',
+								itemIndex,
+								{},
+							) as IDataObject | undefined;
+							const rawReason = additionalFields?.reason;
+							if (rawReason !== undefined && typeof rawReason !== 'string') {
+								throw new NodeOperationError(this.getNode(), 'Reason must be a string.', {
+									itemIndex,
+								});
+							}
+							const reason =
+								typeof rawReason === 'string' ? trimmedOrUndefined(rawReason) : undefined;
+
+							responseData = await this.helpers.httpRequestWithAuthentication.call(
+								this,
+								'matrixE2eeApi',
+								{
+									method: 'POST',
+									url: getGatewayInviteRoomUrl(baseUrl),
+									body: {
+										room_id: rawRoomId.trim(),
+										user_ids: userIds,
+										...(reason === undefined ? {} : { reason }),
+									},
+									json: true,
+								},
+							);
+							break;
+						}
+						case 'leave': {
+							const rawRoomId = this.getNodeParameter('roomId', itemIndex);
+							if (typeof rawRoomId !== 'string' || rawRoomId.trim().length === 0) {
+								throw new NodeOperationError(this.getNode(), 'Room must not be empty.', {
+									itemIndex,
+								});
+							}
+							const additionalFields = this.getNodeParameter(
+								'additionalFields',
+								itemIndex,
+								{},
+							) as IDataObject | undefined;
+							const rawReason = additionalFields?.reason;
+							if (rawReason !== undefined && typeof rawReason !== 'string') {
+								throw new NodeOperationError(this.getNode(), 'Reason must be a string.', {
+									itemIndex,
+								});
+							}
+							const reason =
+								typeof rawReason === 'string' ? trimmedOrUndefined(rawReason) : undefined;
+
+							responseData = await this.helpers.httpRequestWithAuthentication.call(
+								this,
+								'matrixE2eeApi',
+								{
+									method: 'POST',
+									url: getGatewayLeaveRoomUrl(baseUrl),
+									body: {
+										room_id: rawRoomId.trim(),
+										...(reason === undefined ? {} : { reason }),
+									},
+									json: true,
+								},
+							);
+							break;
+						}
+						case 'create': {
+							const rawName = this.getNodeParameter('name', itemIndex);
+							if (typeof rawName !== 'string' || rawName.trim().length === 0) {
+								throw new NodeOperationError(this.getNode(), 'Room Name must not be empty.', {
+									itemIndex,
+								});
+							}
+							const visibility = this.getNodeParameter('visibility', itemIndex) as string;
+							if (visibility !== 'private' && visibility !== 'public') {
+								throw new NodeOperationError(
+									this.getNode(),
+									`Unsupported Visibility: ${visibility}`,
+									{ itemIndex },
+								);
+							}
+							const additionalFields = this.getNodeParameter(
+								'additionalFields',
+								itemIndex,
+								{},
+							) as IDataObject | undefined;
+							const rawTopic = additionalFields?.topic;
+							if (rawTopic !== undefined && typeof rawTopic !== 'string') {
+								throw new NodeOperationError(this.getNode(), 'Topic must be a string.', {
+									itemIndex,
+								});
+							}
+							const topic =
+								typeof rawTopic === 'string' ? trimmedOrUndefined(rawTopic) : undefined;
+
+							const rawRoomAliasName = additionalFields?.roomAliasName;
+							if (rawRoomAliasName !== undefined && typeof rawRoomAliasName !== 'string') {
+								throw new NodeOperationError(this.getNode(), 'Alias must be a string.', {
+									itemIndex,
+								});
+							}
+							const roomAliasName =
+								typeof rawRoomAliasName === 'string'
+									? trimmedOrUndefined(rawRoomAliasName)
+									: undefined;
+
+							const invite = resolveValidatedUserIds.call(
+								this,
+								additionalFields?.invite,
+								'Invite Users',
+								itemIndex,
+							);
+
+							const isEncrypted =
+								additionalFields?.isEncrypted === undefined
+									? true
+									: Boolean(additionalFields.isEncrypted);
+
+							responseData = await this.helpers.httpRequestWithAuthentication.call(
+								this,
+								'matrixE2eeApi',
+								{
+									method: 'POST',
+									url: getGatewayCreateRoomUrl(baseUrl),
+									body: {
+										name: rawName.trim(),
+										visibility,
+										...(topic === undefined ? {} : { topic }),
+										...(roomAliasName === undefined ? {} : { room_alias_name: roomAliasName }),
+										...(invite.length === 0 ? {} : { invite }),
+										is_encrypted: isEncrypted,
+									},
+									json: true,
+								},
+							);
+							break;
+						}
+						default:
+							throw new NodeOperationError(
+								this.getNode(),
+								`Unsupported room operation: ${operation}`,
+								{ itemIndex },
+							);
+					}
+
+					returnData.push({
+						json: responseData as IDataObject,
+						pairedItem: { item: itemIndex },
+					});
+					continue;
+				}
+
+				if (resource !== 'message') {
+					throw new NodeOperationError(this.getNode(), `Unsupported resource: ${resource}`, {
+						itemIndex,
+					});
+				}
+
 				const roomId = this.getNodeParameter('roomId', itemIndex) as string;
 
 				if (roomId.trim().length === 0) {
 					throw new NodeOperationError(this.getNode(), 'Room must not be empty.', { itemIndex });
 				}
-				let responseData: unknown;
 
 				switch (operation) {
 					case 'message': {
