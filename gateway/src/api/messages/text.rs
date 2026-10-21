@@ -44,7 +44,7 @@ pub(super) async fn send_markdown_message(
     request: SendMarkdownRequest,
     gateway_message_type: GatewayMessageType,
 ) -> ApiResult<Json<MessageActionResponse>> {
-    authorize_request(&state.api_secret_token, &headers)?;
+    let account = authorize_request(&state, &headers)?;
     let mentions = resolve_mentions(request.mentions)?;
     let relates_to =
         resolve_relates_to(request.relation_type, request.target_event_id.as_deref())?;
@@ -57,15 +57,16 @@ pub(super) async fn send_markdown_message(
     .ok_or_else(|| client_error("body must not be empty"))?;
     let raw_content = into_raw_room_message_content(&payload)?;
 
-    let room = resolve_known_room(&state.client, &request.room_id).await?;
+    let room = resolve_known_room(&account.client, &request.room_id).await?;
     let room_id = room.room_id().to_owned();
     info!(
+        account = %account.account_id,
         room_id = %room_id,
         message_type = gateway_message_type.as_str(),
         "sending Matrix message"
     );
     let response = room.send_raw("m.room.message", raw_content).await.map_err(|error| {
-        error!(%error, room_id = %room_id, "failed to send Matrix message");
+        error!(account = %account.account_id, %error, room_id = %room_id, "failed to send Matrix message");
         server_error("failed to send Matrix message")
     })?;
 

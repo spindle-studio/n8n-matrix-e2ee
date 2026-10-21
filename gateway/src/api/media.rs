@@ -73,12 +73,12 @@ pub(super) async fn download_media(
     headers: HeaderMap,
     Query(query): Query<MediaDownloadQuery>,
 ) -> ApiResult<Response> {
-    authorize_request(&state.api_secret_token, &headers)?;
+    let account = authorize_request(&state, &headers)?;
     let event_id = parse_event_id(&query.event_id)?;
-    let room = resolve_known_room(&state.client, &query.room_id).await?;
+    let room = resolve_known_room(&account.client, &query.room_id).await?;
     let room_id = room.room_id().to_owned();
     let event = room.event(&event_id, None).await.map_err(|error| {
-        error!(%error, room_id = %room_id, event_id = %event_id, "failed to fetch Matrix event");
+        error!(account = %account.account_id, %error, room_id = %room_id, event_id = %event_id, "failed to fetch Matrix event");
         server_error("failed to fetch Matrix event")
     })?;
     let media = downloadable_media_from_event(&event)
@@ -87,8 +87,8 @@ pub(super) async fn download_media(
         source: media.source(),
         format: MediaFormat::File,
     };
-    let bytes = state.client.media().get_media_content(&request, true).await.map_err(|error| {
-        error!(%error, room_id = %room_id, event_id = %event_id, "failed to download Matrix media");
+    let bytes = account.client.media().get_media_content(&request, true).await.map_err(|error| {
+        error!(account = %account.account_id, %error, room_id = %room_id, event_id = %event_id, "failed to download Matrix media");
         server_error("failed to download Matrix media")
     })?;
     Ok((

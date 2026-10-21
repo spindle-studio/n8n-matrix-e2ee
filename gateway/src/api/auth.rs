@@ -4,7 +4,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 
-use crate::gateway::AppState;
+use crate::gateway::{AccountState, AppState};
 
 use super::{
     error::ErrorResponse,
@@ -15,13 +15,25 @@ pub(crate) async fn auth_check(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    authorize_request(&state.api_secret_token, &headers)?;
+    authorize_request(&state, &headers)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub(crate) fn authorize_request(expected_token: &str, headers: &HeaderMap) -> ApiResult<()> {
-    if authorization_header_token(headers).is_some_and(|token| token == expected_token) {
-        return Ok(());
+pub(crate) fn authorize_request<'a>(
+    state: &'a AppState,
+    headers: &HeaderMap,
+) -> ApiResult<&'a AccountState> {
+    authorize_with(headers, |token| state.account_for_token(token))
+}
+
+fn authorize_with<T, F>(headers: &HeaderMap, resolve_token: F) -> ApiResult<T>
+where
+    F: FnOnce(&str) -> Option<T>,
+{
+    if let Some(token) = authorization_header_token(headers)
+        && let Some(resolved) = resolve_token(token)
+    {
+        return Ok(resolved);
     }
 
     Err(unauthorized_error("missing or invalid gateway token"))
@@ -75,15 +87,20 @@ mod tests {
             "Bearer secret-token".parse().unwrap(),
         );
 
-        assert!(authorize_request("secret-token", &headers).is_ok());
+        assert!(
+            authorize_with(&headers, |token| (token == "secret-token").then_some("default"))
+                .is_ok()
+        );
     }
 
     #[test]
     fn request_authorization_rejects_missing_credentials() {
         assert_eq!(
-            authorize_request("secret-token", &HeaderMap::new())
-                .expect_err("missing tokens should be rejected")
-                .0,
+            authorize_with(&HeaderMap::new(), |token| {
+                (token == "secret-token").then_some("default")
+            })
+            .expect_err("missing tokens should be rejected")
+            .0,
             StatusCode::UNAUTHORIZED
         );
     }

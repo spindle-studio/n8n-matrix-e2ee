@@ -1,10 +1,9 @@
 use matrix_sdk::{Client, encryption::VerificationState, ruma::api::client::uiaa};
 use tracing::{info, warn};
 
-use crate::config::Config;
-
 pub(crate) async fn ensure_cross_signing_bootstrap(
-    config: &Config,
+    account_id: &str,
+    matrix_password: &str,
     client: &Client,
 ) -> anyhow::Result<()> {
     let Some(user_id) = client.user_id() else {
@@ -17,7 +16,7 @@ pub(crate) async fn ensure_cross_signing_bootstrap(
         if let Some(response) = error.as_uiaa_response() {
             let mut password = uiaa::Password::new(
                 uiaa::UserIdentifier::Matrix(uiaa::MatrixUserIdentifier::new(user_id.to_string())),
-                config.matrix_password.clone(),
+                matrix_password.to_owned(),
             );
             password.session = response.session.clone();
 
@@ -33,6 +32,7 @@ pub(crate) async fn ensure_cross_signing_bootstrap(
 
     if status.has_cross_signing_identity && !status.is_device_verified {
         warn!(
+            account = %account_id,
             user = %status.user_id,
             device_id = %status.device_id,
             verification_state = %status.verification_state,
@@ -43,6 +43,7 @@ pub(crate) async fn ensure_cross_signing_bootstrap(
         );
     } else {
         info!(
+            account = %account_id,
             user = %status.user_id,
             device_id = %status.device_id,
             verification_state = %status.verification_state,

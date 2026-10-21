@@ -16,27 +16,30 @@ replace `docker` with `podman` if that's what you use.
 
 ### 1. Configure the gateway
 
-Save [`.env.example`](gateway/.env.example) as `.env` and fill in your details:
+Save [`config.toml.example`](gateway/config.toml.example) as `config.toml` and fill in your details:
 
-```dotenv
-HOMESERVER_URL=https://matrix.example.org
-MATRIX_USER=@n8n-bot:example.org
-MATRIX_PASSWORD=your-bot-password
-API_SECRET_TOKEN=your-random-api-token
+```toml
+port = 8080
+
+[default]
+homeserver_url = "https://matrix.example.org"
+matrix_user = "@n8n-bot:example.org"
+matrix_password = "your-bot-password"
+api_secret_token = "your-random-api-token"
 ```
 
-Generate the API token with `openssl rand -hex 32`. Keep `.env` private.
+You can define multiple `[account-name]` sections in `config.toml` with distinct `api_secret_token` values to run several Matrix accounts in one gateway instance (string values also support `${VAR}` environment variable interpolation). Generate each API token with `openssl rand -hex 32`. Keep `config.toml` private.
 
 ### 2. Start the gateway
 
-From the directory containing `.env`, run:
+From the directory containing `config.toml`, run:
 
 ```sh
 docker run --detach --name n8n-matrix-e2ee-gateway \
   --restart unless-stopped \
-  --env-file .env \
   --publish 127.0.0.1:8080:8080 \
-  --volume n8n-matrix-e2ee-data:/data \
+  --volume ./config.toml:/app/config.toml:ro \
+  --volume n8n-matrix-e2ee-data:/app/data \
   ghcr.io/spindle-studio/n8n-matrix-e2ee-gateway:0.4.0
 ```
 
@@ -59,7 +62,7 @@ In n8n, open **Settings > Community Nodes** and install
 Create **Matrix E2EE Gateway API** credentials with:
 
 - **Gateway Base URL:** `http://localhost:8080` if n8n runs directly on the same host.
-- **API Token:** the value of `API_SECRET_TOKEN` in `.env`.
+- **API Token:** the account's `api_secret_token` value from `config.toml`.
 
 If n8n runs in a container, put both containers on a shared network:
 

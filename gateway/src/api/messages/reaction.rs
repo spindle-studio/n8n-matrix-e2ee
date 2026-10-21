@@ -37,19 +37,21 @@ pub(super) async fn send_reaction(
     headers: HeaderMap,
     Json(request): Json<SendReactionRequest>,
 ) -> ApiResult<Json<ReactionActionResponse>> {
-    authorize_request(&state.api_secret_token, &headers)?;
+    let account = authorize_request(&state, &headers)?;
     let (target_event_id, key) = validate_reaction_request(&request.target_event_id, &request.key)?;
     let content = ReactionEventContent::new(Annotation::new(target_event_id.clone(), key.clone()));
 
-    let room = resolve_known_room(&state.client, &request.room_id).await?;
+    let room = resolve_known_room(&account.client, &request.room_id).await?;
     let room_id = room.room_id().to_owned();
     info!(
+        account = %account.account_id,
         room_id = %room_id,
         target_event_id = %target_event_id,
         "sending Matrix reaction"
     );
     let response = room.send(content).await.map_err(|error| {
         error!(
+            account = %account.account_id,
             %error,
             room_id = %room_id,
             target_event_id = %target_event_id,

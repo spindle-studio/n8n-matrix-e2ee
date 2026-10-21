@@ -37,11 +37,22 @@ pub(crate) async fn websocket(
     ws.max_message_size(MAX_CLIENT_MESSAGE_SIZE)
         .max_frame_size(MAX_CLIENT_MESSAGE_SIZE)
         .on_upgrade(move |mut socket| async move {
-            let authenticated =
-                authenticate(&mut socket, &state.api_secret_token, AUTH_TIMEOUT).await;
+            let account = authenticate(
+                &mut socket,
+                |token| state.account_for_token(token).cloned(),
+                AUTH_TIMEOUT,
+            )
+            .await;
             drop(permit);
-            if authenticated {
-                forward_events(socket, state.events.subscribe(), remote_addr, user_agent).await;
+            if let Some(account) = account {
+                forward_events(
+                    socket,
+                    account.events.subscribe(),
+                    &account.account_id,
+                    remote_addr,
+                    user_agent,
+                )
+                .await;
             }
         })
         .into_response()
@@ -55,26 +66,38 @@ struct Authentication {
     token: String,
 }
 
-async fn authenticate(socket: &mut WebSocket, expected: &str, deadline: Duration) -> bool {
+async fn authenticate<T, F>(
+    socket: &mut WebSocket,
+    resolve_token: F,
+    deadline: Duration,
+) -> Option<T>
+where
+    F: FnOnce(&str) -> Option<T>,
+{
     let result = timeout(deadline, async {
         loop {
             match socket.recv().await {
                 Some(Ok(Message::Text(payload))) => {
-                    return serde_json::from_str::<Authentication>(&payload)
-                        .is_ok_and(|auth| auth.kind == "authenticate" && auth.token == expected);
+                    let Ok(auth) = serde_json::from_str::<Authentication>(&payload) else {
+                        return None;
+                    };
+                    if auth.kind != "authenticate" {
+                        return None;
+                    }
+                    return resolve_token(&auth.token);
                 }
                 Some(Ok(Message::Ping(_))) => {
                     if socket.flush().await.is_err() {
-                        return false;
+                        return None;
                     }
                 }
                 Some(Ok(Message::Pong(_))) => {}
-                _ => return false,
+                _ => return None,
             }
         }
     })
     .await;
-    if result != Ok(true) {
+    let Ok(Some(authenticated)) = result else {
         let _ = timeout(
             Duration::from_secs(1),
             socket.send(Message::Close(Some(CloseFrame {
@@ -83,9 +106,9 @@ async fn authenticate(socket: &mut WebSocket, expected: &str, deadline: Duration
             }))),
         )
         .await;
-        return false;
-    }
-    true
+        return None;
+    };
+    Some(authenticated)
 }
 
 fn request_user_agent(headers: &HeaderMap) -> String {
@@ -100,6 +123,7 @@ fn request_user_agent(headers: &HeaderMap) -> String {
 async fn forward_events(
     mut socket: WebSocket,
     mut events: broadcast::Receiver<GatewayEvent>,
+    account_id: &str,
     remote_addr: SocketAddr,
     user_agent: String,
 ) {
@@ -115,7 +139,7 @@ async fn forward_events(
     ) {
         return;
     }
-    info!(remote_addr = %remote_addr, user_agent, "WebSocket client connected to Matrix event stream");
+    info!(account = %account_id, remote_addr = %remote_addr, user_agent, "WebSocket client connected to Matrix event stream");
     loop {
         tokio::select! {
             incoming = socket.recv() => match incoming {
@@ -143,10 +167,10 @@ async fn forward_events(
                             return;
                         }
                     }
-                    Err(error) => error!(%error, "failed to serialize Matrix event"),
+                    Err(error) => error!(account = %account_id, %error, "failed to serialize Matrix event"),
                 },
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    warn!(skipped, remote_addr = %remote_addr, user_agent, "WebSocket client lagged behind Matrix event stream")
+                    warn!(account = %account_id, skipped, remote_addr = %remote_addr, user_agent, "WebSocket client lagged behind Matrix event stream")
                 }
                 Err(broadcast::error::RecvError::Closed) => return,
             }
@@ -195,18 +219,19 @@ mod tests {
                         ws.max_message_size(MAX_CLIENT_MESSAGE_SIZE)
                             .max_frame_size(MAX_CLIENT_MESSAGE_SIZE)
                             .on_upgrade(move |mut socket| async move {
-                                if !authenticate(
+                                let Some(sender) = authenticate(
                                     &mut socket,
-                                    "test-token",
+                                    |token| (token == "test-token").then(|| sender.clone()),
                                     Duration::from_millis(200),
                                 )
                                 .await
-                                {
+                                else {
                                     return;
-                                }
+                                };
                                 forward_events(
                                     socket,
                                     sender.subscribe(),
+                                    "test-account",
                                     "127.0.0.1:0".parse().unwrap(),
                                     "test".into(),
                                 )
@@ -396,5 +421,111 @@ mod tests {
             receive(&mut second).await,
             ClientMessage::Text(expected.into())
         );
+    }
+
+    #[tokio::test]
+    async fn clients_receive_events_for_their_authenticated_account_only() {
+        let (support_events, _) = broadcast::channel(256);
+        let (alerts_events, _) = broadcast::channel(256);
+        let support_sender = support_events.clone();
+        let alerts_sender = alerts_events.clone();
+
+        let app = Router::new().route(
+            "/ws",
+            get(move |ws: WebSocketUpgrade| {
+                let support_sender = support_sender.clone();
+                let alerts_sender = alerts_sender.clone();
+                async move {
+                    ws.max_message_size(MAX_CLIENT_MESSAGE_SIZE)
+                        .max_frame_size(MAX_CLIENT_MESSAGE_SIZE)
+                        .on_upgrade(move |mut socket| async move {
+                            let Some((account_id, sender)) = authenticate(
+                                &mut socket,
+                                |token| match token {
+                                    "support-token" => Some(("support", support_sender.clone())),
+                                    "alerts-token" => Some(("alerts", alerts_sender.clone())),
+                                    _ => None,
+                                },
+                                Duration::from_millis(200),
+                            )
+                            .await
+                            else {
+                                return;
+                            };
+                            forward_events(
+                                socket,
+                                sender.subscribe(),
+                                account_id,
+                                "127.0.0.1:0".parse().unwrap(),
+                                "test".into(),
+                            )
+                            .await
+                        })
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let (mut support_client, _) =
+            connect_async(format!("ws://{address}/ws")).await.unwrap();
+        support_client
+            .send(ClientMessage::Text(
+                r#"{"type":"authenticate","token":"support-token"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            receive(&mut support_client).await,
+            ClientMessage::Text(r#"{"type":"authenticated"}"#.into())
+        );
+
+        let (mut alerts_client, _) = connect_async(format!("ws://{address}/ws")).await.unwrap();
+        alerts_client
+            .send(ClientMessage::Text(
+                r#"{"type":"authenticate","token":"alerts-token"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            receive(&mut alerts_client).await,
+            ClientMessage::Text(r#"{"type":"authenticated"}"#.into())
+        );
+
+        let support_event = crate::api::room_message_content_to_gateway_event(
+            "!support:example.org",
+            "@user:example.org",
+            "$support-event",
+            &RoomMessageEventContent::text_plain("support message"),
+        )
+        .unwrap();
+        let alerts_event = crate::api::room_message_content_to_gateway_event(
+            "!alerts:example.org",
+            "@user:example.org",
+            "$alerts-event",
+            &RoomMessageEventContent::text_plain("alerts message"),
+        )
+        .unwrap();
+
+        let expected_support = serde_json::to_string(&support_event).unwrap();
+        let expected_alerts = serde_json::to_string(&alerts_event).unwrap();
+
+        assert_eq!(support_events.send(support_event).unwrap(), 1);
+        assert_eq!(alerts_events.send(alerts_event).unwrap(), 1);
+
+        assert_eq!(
+            receive(&mut support_client).await,
+            ClientMessage::Text(expected_support.into())
+        );
+        assert_eq!(
+            receive(&mut alerts_client).await,
+            ClientMessage::Text(expected_alerts.into())
+        );
+
+        task.abort();
     }
 }

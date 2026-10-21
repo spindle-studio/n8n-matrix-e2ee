@@ -23,7 +23,7 @@ async fn main() {
         )
         .init();
 
-    let config = Config::from_env().unwrap_or_else(|error| {
+    let config = Config::load().unwrap_or_else(|error| {
         eprintln!("configuration error: {error}");
         std::process::exit(2);
     });
