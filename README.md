@@ -2,12 +2,15 @@
 
 Send and receive messages in encrypted Matrix rooms from n8n.
 
-The **gateway** connects to Matrix and stores the bot's session and encryption
-keys. The **n8n nodes** connect to the gateway to create, join, invite users to, or leave rooms, send text, notices, emotes, images, audio, and reactions, delete messages or reactions, set typing indicators, or start a workflow when a message, reaction, or room membership event (`invite`, `join`, or `leave`) arrives.
+The **gateway** connects to Matrix and manages the session and encryption keys. The **n8n nodes** connect to the gateway so your workflows can listen for activity and interact with rooms:
+
+- **Trigger workflows** on incoming messages (text, media, and voice), reactions, or room membership changes (invites, joins, and leaves).
+- **Send and manage messages** — text, notices, emotes, images, voice messages, replies, threads, edits, reactions, deletions, and typing indicators.
+- **Manage rooms** — create rooms, join or leave rooms, and invite users.
 
 ## Getting started
 
-You'll need a Matrix bot account, Docker or Podman, and a self-hosted n8n instance.
+You'll need a Matrix account, Docker or Podman, and a self-hosted n8n instance.
 The gateway image supports Linux AMD64 and ARM64. The commands below use Docker;
 replace `docker` with `podman` if that's what you use.
 
@@ -34,10 +37,10 @@ docker run --detach --name n8n-matrix-e2ee-gateway \
   --env-file .env \
   --publish 127.0.0.1:8080:8080 \
   --volume n8n-matrix-e2ee-data:/data \
-  ghcr.io/spindle-studio/n8n-matrix-e2ee-gateway:0.2.0
+  ghcr.io/spindle-studio/n8n-matrix-e2ee-gateway:0.4.0
 ```
 
-Keep the data volume when upgrading: it contains the bot's login and encryption
+Keep the data volume when upgrading: it stores the Matrix session and encryption
 keys. Keep the gateway on a private network and protect its API token.
 
 Check that it has started:
@@ -75,20 +78,15 @@ Test and save the credentials.
 
 ### 4. Receive your first message
 
-Add **Matrix E2EE Trigger** to a workflow, choose an event (**On Message**, **On Reaction**, or **On Room Event**), select your credentials, and click
-**Listen for test event**. Invite the bot to a room (or join a room with the **Matrix E2EE** `Room > Join` operation) and send a new message.
+Add **Matrix E2EE Trigger** to a workflow, choose an event such as **On Message**, select your credentials, and click **Listen for test event**. Invite the Matrix account to a room (or join one using the **Matrix E2EE** node) and send a message from another account to see the event arrive in n8n.
 
-The trigger can listen for text, notice, emote, image, and audio messages, reactions, or room membership events (`invite`, `join`, and `leave`), and can download media for
-later steps. It only receives events while listening; earlier events aren't
-replayed. Events sent by the bot itself are ignored.
-
-Use **Matrix E2EE** to create, join, invite users to, or leave a room, send, edit, or delete a message, react to a message, or set a typing indicator.
+The trigger only receives new events while listening—earlier history isn't replayed, and events sent by the connected account itself are ignored. When receiving images or audio, you can enable **Download Media** on the trigger to pass the file to later steps.
 
 ## Compatibility
 
 | n8n package | Gateway |
 | --- | --- |
-| 0.1.0 | 0.2.0 or later supporting the same API |
+| 0.3.0 | 0.4.0 or later supporting the same API |
 
 Use a current self-hosted n8n release with Node.js 22.4 or later. The package
 has not been verified for n8n Cloud. The gateway and nodes have separate versions;
