@@ -3,6 +3,7 @@ node_modules/
 __pycache__/
 dist/
 .env
+config.toml
 .DS_Store
 data/
 synapse-data/

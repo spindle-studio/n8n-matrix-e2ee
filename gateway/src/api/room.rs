@@ -257,7 +257,7 @@ async fn join_room(
     headers: HeaderMap,
     Json(request): Json<JoinRoomRequest>,
 ) -> ApiResult<Json<RoomIdResponse>> {
-    authorize_request(&state.api_secret_token, &headers)?;
+    let account = authorize_request(&state, &headers)?;
     let room_or_alias_id = parse_room_or_alias_id(&request.room_id)?;
     let server_names: Vec<_> = room_or_alias_id
         .server_name()
@@ -265,13 +265,13 @@ async fn join_room(
         .into_iter()
         .collect();
 
-    info!(room_identifier = %room_or_alias_id, "joining Matrix room");
-    let room = state
+    info!(account = %account.account_id, room_identifier = %room_or_alias_id, "joining Matrix room");
+    let room = account
         .client
         .join_room_by_id_or_alias(&room_or_alias_id, &server_names)
         .await
         .map_err(|error| {
-            error!(%error, room_identifier = %room_or_alias_id, "failed to join Matrix room");
+            error!(account = %account.account_id, %error, room_identifier = %room_or_alias_id, "failed to join Matrix room");
             server_error("failed to join Matrix room")
         })?;
 
@@ -285,17 +285,17 @@ async fn leave_room(
     headers: HeaderMap,
     Json(request): Json<LeaveRoomApiRequest>,
 ) -> ApiResult<Json<LeaveRoomResponse>> {
-    authorize_request(&state.api_secret_token, &headers)?;
-    let room = resolve_known_room(&state.client, &request.room_id).await?;
+    let account = authorize_request(&state, &headers)?;
+    let room = resolve_known_room(&account.client, &request.room_id).await?;
     let room_id = room.room_id().to_owned();
     let reason = normalize_optional_reason(request.reason);
 
-    info!(room_id = %room_id, reason = ?reason, "leaving Matrix room");
+    info!(account = %account.account_id, room_id = %room_id, reason = ?reason, "leaving Matrix room");
     let mut matrix_request = LeaveRoomRequest::new(room_id.clone());
     matrix_request.reason = reason;
 
-    state.client.send(matrix_request).await.map_err(|error| {
-        error!(%error, room_id = %room_id, "failed to leave Matrix room");
+    account.client.send(matrix_request).await.map_err(|error| {
+        error!(account = %account.account_id, %error, room_id = %room_id, "failed to leave Matrix room");
         server_error("failed to leave Matrix room")
     })?;
 
@@ -307,21 +307,22 @@ async fn create_room(
     headers: HeaderMap,
     Json(request): Json<CreateRoomApiRequest>,
 ) -> ApiResult<Json<RoomIdResponse>> {
-    authorize_request(&state.api_secret_token, &headers)?;
+    let account = authorize_request(&state, &headers)?;
     let matrix_request = build_create_room_request(request)?;
 
     info!(
+        account = %account.account_id,
         name = ?matrix_request.name,
         visibility = ?matrix_request.visibility,
         encrypted = !matrix_request.initial_state.is_empty(),
         "creating Matrix room"
     );
-    let room = state
+    let room = account
         .client
         .create_room(matrix_request)
         .await
         .map_err(|error| {
-            error!(%error, "failed to create Matrix room");
+            error!(account = %account.account_id, %error, "failed to create Matrix room");
             server_error("failed to create Matrix room")
         })?;
 
@@ -335,20 +336,21 @@ async fn invite_room(
     headers: HeaderMap,
     Json(request): Json<InviteRoomApiRequest>,
 ) -> ApiResult<Json<RoomIdResponse>> {
-    authorize_request(&state.api_secret_token, &headers)?;
-    let room = resolve_known_room(&state.client, &request.room_id).await?;
+    let account = authorize_request(&state, &headers)?;
+    let room = resolve_known_room(&account.client, &request.room_id).await?;
     let room_id = room.room_id().to_owned();
     let matrix_requests =
         build_invite_room_requests(room_id.clone(), request.user_ids, request.reason)?;
 
     info!(
+        account = %account.account_id,
         room_id = %room_id,
         invite_count = matrix_requests.len(),
         "inviting Matrix users to room"
     );
     for matrix_request in matrix_requests {
-        state.client.send(matrix_request).await.map_err(|error| {
-            error!(%error, room_id = %room_id, "failed to invite Matrix user to room");
+        account.client.send(matrix_request).await.map_err(|error| {
+            error!(account = %account.account_id, %error, room_id = %room_id, "failed to invite Matrix user to room");
             server_error("failed to invite Matrix user to room")
         })?;
     }

@@ -94,7 +94,7 @@ pub(super) async fn send_audio(
     headers: HeaderMap,
     multipart: Multipart,
 ) -> ApiResult<Json<MessageActionResponse>> {
-    authorize_request(&state.api_secret_token, &headers)?;
+    let account = authorize_request(&state, &headers)?;
     let upload = extract_multipart_media(multipart).await?;
     let content_type = validate_audio_content_type(upload.content_type)?;
     if upload.data.is_empty() {
@@ -107,7 +107,7 @@ pub(super) async fn send_audio(
         upload.metadata.target_event_id.as_deref(),
     )?;
     let metadata = extract_audio_metadata(&upload.data).map_err(|message| client_error(message))?;
-    let room = resolve_known_room(&state.client, &upload.metadata.room_id).await?;
+    let room = resolve_known_room(&account.client, &upload.metadata.room_id).await?;
     let room_id = room.room_id().to_owned();
     let file_name = audio_file_name(
         upload
@@ -118,7 +118,7 @@ pub(super) async fn send_audio(
     );
     let message_body = audio_body(upload.metadata.body.as_deref());
     let source = upload_room_media(
-        &state.client,
+        &account.client,
         &room,
         &content_type,
         upload.data.to_vec(),
@@ -137,12 +137,12 @@ pub(super) async fn send_audio(
     )?;
     let raw_content = into_raw_room_message_content(&payload)?;
 
-    info!(room_id = %room_id, file_name, message_type = "audio", "sending Matrix audio message");
+    info!(account = %account.account_id, room_id = %room_id, file_name, message_type = "audio", "sending Matrix audio message");
     let response = room
         .send_raw("m.room.message", raw_content)
         .await
         .map_err(|error| {
-            error!(%error, room_id = %room_id, "failed to send Matrix audio message");
+            error!(account = %account.account_id, %error, room_id = %room_id, "failed to send Matrix audio message");
             server_error("failed to send Matrix audio message")
         })?;
 

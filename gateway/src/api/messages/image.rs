@@ -37,7 +37,7 @@ pub(super) async fn send_image(
     headers: HeaderMap,
     multipart: Multipart,
 ) -> ApiResult<Json<MessageActionResponse>> {
-    authorize_request(&state.api_secret_token, &headers)?;
+    let account = authorize_request(&state, &headers)?;
     let upload = extract_multipart_media(multipart).await?;
     if upload.data.is_empty() {
         return Err(client_error("image body must not be empty"));
@@ -49,7 +49,7 @@ pub(super) async fn send_image(
         upload.metadata.relation_type,
         upload.metadata.target_event_id.as_deref(),
     )?;
-    let room = resolve_known_room(&state.client, &upload.metadata.room_id).await?;
+    let room = resolve_known_room(&account.client, &upload.metadata.room_id).await?;
     let room_id = room.room_id().to_owned();
     let file_name = resolved_file_name(
         upload
@@ -63,8 +63,9 @@ pub(super) async fn send_image(
     let size_bytes = upload.data.len() as u64;
     let is_encrypted = is_room_encrypted(&room).await?;
     let cache_key = MediaCacheKey::new(&room_id, is_encrypted, &content_type, &upload.data);
-    let source = if let Some(cached_source) = state.media_cache.get(&cache_key) {
+    let source = if let Some(cached_source) = account.media_cache.get(&cache_key) {
         info!(
+            account = %account.account_id,
             room_id = %room_id,
             file_name,
             mime_type = %content_type,
@@ -75,7 +76,7 @@ pub(super) async fn send_image(
         cached_source
     } else {
         let uploaded_source = upload_room_media_with_encryption(
-            &state.client,
+            &account.client,
             &room,
             is_encrypted,
             &content_type,
@@ -83,7 +84,7 @@ pub(super) async fn send_image(
             "failed to upload Matrix image media",
         )
         .await?;
-        state.media_cache.put(&cache_key, &uploaded_source);
+        account.media_cache.put(&cache_key, &uploaded_source);
         uploaded_source
     };
     let payload = image_room_message_payload(
@@ -97,9 +98,9 @@ pub(super) async fn send_image(
     )?;
     let raw_content = into_raw_room_message_content(&payload)?;
 
-    info!(room_id = %room_id, file_name, mime_type = %content_type, message_type = "image", "sending Matrix image message");
+    info!(account = %account.account_id, room_id = %room_id, file_name, mime_type = %content_type, message_type = "image", "sending Matrix image message");
     let response = room.send_raw("m.room.message", raw_content).await.map_err(|error| {
-        error!(%error, room_id = %room_id, file_name, mime_type = %content_type, "failed to send Matrix image message");
+        error!(account = %account.account_id, %error, room_id = %room_id, file_name, mime_type = %content_type, "failed to send Matrix image message");
         server_error("failed to send Matrix image message")
     })?;
 

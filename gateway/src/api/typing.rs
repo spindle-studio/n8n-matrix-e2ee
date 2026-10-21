@@ -55,13 +55,14 @@ pub(super) async fn set_typing(
     headers: axum::http::HeaderMap,
     Json(request): Json<TypingRequest>,
 ) -> ApiResult<Json<RoomTypingResponse>> {
-    authorize_request(&state.api_secret_token, &headers)?;
+    let account = authorize_request(&state, &headers)?;
     let (typing_state, resolved_timeout_seconds) =
         resolve_typing_state(request.typing, request.timeout_seconds)?;
-    let room = resolve_known_room(&state.client, &request.room_id).await?;
+    let room = resolve_known_room(&account.client, &request.room_id).await?;
     let room_id = room.room_id().to_owned();
 
     info!(
+        account = %account.account_id,
         room_id = %room_id,
         typing = request.typing,
         timeout_seconds = resolved_timeout_seconds,
@@ -72,8 +73,8 @@ pub(super) async fn set_typing(
         room.room_id().to_owned(),
         typing_state,
     );
-    state.client.send(matrix_request).await.map_err(|error| {
-        error!(%error, room_id = %room_id, typing = request.typing, "failed to update Matrix typing state");
+    account.client.send(matrix_request).await.map_err(|error| {
+        error!(account = %account.account_id, %error, room_id = %room_id, typing = request.typing, "failed to update Matrix typing state");
         server_error("failed to update Matrix typing state")
     })?;
 

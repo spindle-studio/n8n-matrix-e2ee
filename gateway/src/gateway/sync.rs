@@ -21,7 +21,7 @@ use crate::api::{
     stripped_room_invite_to_gateway_event,
 };
 
-pub(crate) async fn run_sync_loop(client: Client) {
+pub(crate) async fn run_sync_loop(account_id: String, client: Client) {
     let mut sync_stream = Box::pin(
         client
             .sync_stream(matrix_sdk::config::SyncSettings::default())
@@ -34,6 +34,7 @@ pub(crate) async fn run_sync_loop(client: Client) {
             Ok(_) => {
                 if let Some(recovered_after_failures) = sync_state.record_success() {
                     info!(
+                        account = %account_id,
                         recovered_after_failures,
                         "Matrix sync recovered after transient failures"
                     );
@@ -42,6 +43,7 @@ pub(crate) async fn run_sync_loop(client: Client) {
             Err(error) => {
                 let consecutive_failures = sync_state.record_failure();
                 warn!(
+                    account = %account_id,
                     %error,
                     consecutive_failures,
                     "Matrix sync request failed; retrying"
@@ -50,21 +52,25 @@ pub(crate) async fn run_sync_loop(client: Client) {
         }
     }
 
-    error!("Matrix sync stream ended unexpectedly");
+    error!(account = %account_id, "Matrix sync stream ended unexpectedly");
 }
 
 pub(crate) fn register_event_handlers(
+    account_id: &str,
     client: &Client,
     events: broadcast::Sender<GatewayEvent>,
     own_user_id: OwnedUserId,
 ) {
     let message_events = events.clone();
     let message_own_user_id = own_user_id.clone();
+    let message_account_id = account_id.to_owned();
     client.add_event_handler(move |event: OriginalSyncRoomMessageEvent, room: Room| {
         let events = message_events.clone();
         let own_user_id = message_own_user_id.clone();
+        let account_id = message_account_id.clone();
         async move {
             info!(
+                account = %account_id,
                 room_id = %room.room_id(),
                 sender = %event.sender,
                 event_id = %event.event_id,
@@ -74,6 +80,7 @@ pub(crate) fn register_event_handlers(
 
             if is_self_authored_message(&event.sender, own_user_id.as_ref()) {
                 info!(
+                    account = %account_id,
                     room_id = %room.room_id(),
                     sender = %event.sender,
                     event_id = %event.event_id,
@@ -97,11 +104,14 @@ pub(crate) fn register_event_handlers(
 
     let reaction_events = events.clone();
     let reaction_own_user_id = own_user_id.clone();
+    let reaction_account_id = account_id.to_owned();
     client.add_event_handler(move |event: OriginalSyncReactionEvent, room: Room| {
         let events = reaction_events.clone();
         let own_user_id = reaction_own_user_id.clone();
+        let account_id = reaction_account_id.clone();
         async move {
             info!(
+                account = %account_id,
                 room_id = %room.room_id(),
                 sender = %event.sender,
                 event_id = %event.event_id,
@@ -111,6 +121,7 @@ pub(crate) fn register_event_handlers(
 
             if is_self_authored_message(&event.sender, own_user_id.as_ref()) {
                 info!(
+                    account = %account_id,
                     room_id = %room.room_id(),
                     sender = %event.sender,
                     event_id = %event.event_id,
@@ -134,9 +145,11 @@ pub(crate) fn register_event_handlers(
 
     let invite_events = events.clone();
     let invite_own_user_id = own_user_id.clone();
+    let invite_account_id = account_id.to_owned();
     client.add_event_handler(move |event: StrippedRoomMemberEvent, room: Room| {
         let events = invite_events.clone();
         let own_user_id = invite_own_user_id.clone();
+        let account_id = invite_account_id.clone();
         async move {
             if event.state_key != room.own_user_id() {
                 return;
@@ -154,6 +167,7 @@ pub(crate) fn register_event_handlers(
             };
 
             info!(
+                account = %account_id,
                 inviter = %event.sender,
                 room_id = %room.room_id(),
                 "received Matrix room invite for the gateway user"
@@ -165,9 +179,11 @@ pub(crate) fn register_event_handlers(
 
     let member_events = events;
     let member_own_user_id = own_user_id;
+    let member_account_id = account_id.to_owned();
     client.add_event_handler(move |event: OriginalSyncRoomMemberEvent, room: Room| {
         let events = member_events.clone();
         let own_user_id = member_own_user_id.clone();
+        let account_id = member_account_id.clone();
         async move {
             if room.state() != RoomState::Joined {
                 return;
@@ -184,6 +200,7 @@ pub(crate) fn register_event_handlers(
             };
 
             info!(
+                account = %account_id,
                 room_id = %room.room_id(),
                 sender = %event.sender,
                 user_id = %event.state_key,

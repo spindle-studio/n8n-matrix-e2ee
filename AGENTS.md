@@ -12,8 +12,7 @@ developer workflows, API contracts, and troubleshooting here.
 
 ## Local development
 
-Requirements: Rust, Node.js 22.4 or later/npm, and Docker or Podman. Copy `gateway/.env.example` to
-`.env` and configure a real Matrix bot account, homeserver, and API token. Never commit `.env`, Matrix session files, encryption stores,
+Requirements: Rust, Node.js 22.4 or later/npm, and Docker or Podman. Copy `gateway/config.toml.example` to `gateway/config.toml` and configure one or more real Matrix bot accounts, homeservers, and API tokens. Never commit `config.toml`, `.env`, Matrix session files, encryption stores,
 or real credentials.
 
 Build and test the gateway:
@@ -24,11 +23,11 @@ cargo test --locked
 cargo build --locked --release --package n8n-matrix-e2ee-gateway
 ```
 
-Run the gateway directly without Docker (loads `.env` automatically; set `DATA_DIR=./data` in `.env` or on the command line for local state persistence):
+Run the gateway directly without Docker (reads `./config.toml` and `./data` by default, or override with `--config` / `GATEWAY_CONFIG`, `--data-dir` / `GATEWAY_DATA_DIR`, and `--port` / `GATEWAY_PORT`):
 
 ```sh
 cd gateway
-DATA_DIR=./data cargo run --locked --package n8n-matrix-e2ee-gateway
+cargo run --locked --package n8n-matrix-e2ee-gateway
 ```
 
 From the repository root, build its container image and run it with persistent state:
@@ -37,8 +36,9 @@ From the repository root, build its container image and run it with persistent s
 docker build --tag n8n-matrix-e2ee-gateway gateway
 docker volume create gateway-data
 docker run --rm --name n8n-matrix-e2ee-gateway \
-  --env-file .env --publish 8080:8080 \
-  --volume gateway-data:/data n8n-matrix-e2ee-gateway
+  --publish 8080:8080 \
+  --volume ./gateway/config.toml:/app/config.toml:ro \
+  --volume gateway-data:/app/data n8n-matrix-e2ee-gateway
 ```
 
 Build and lint the node package:
@@ -78,12 +78,11 @@ Read its `.agents/` guidance before modifying nodes or credentials.
 
 ## Gateway configuration and state
 
-`HOMESERVER_URL`, `MATRIX_USER`, `MATRIX_PASSWORD`, and `API_SECRET_TOKEN` are
-required. `PORT` defaults to `8080`. `DATA_DIR`
-defaults to `/data` (set `DATA_DIR=./data` when running locally outside a
-container).
+The gateway loads a TOML configuration file from `./config.toml` by default (overridable via `--config` or `GATEWAY_CONFIG`). State is stored under `./data` by default (overridable via `--data-dir`, `GATEWAY_DATA_DIR`, or top-level `data_dir` in `config.toml`). `port` defaults to `8080` (overridable via `--port`, `GATEWAY_PORT`, or top-level `port` in `config.toml`).
 
-The `DATA_DIR` directory (`/data` in containers) contains `matrix_session.json`, `matrix_store`, and `media_cache.sqlite3`.
+Each top-level table in `config.toml` defines a Matrix account (`[account-id]`) with `homeserver_url`, `matrix_user`, `matrix_password`, and `api_secret_token`. String values support `${VAR}` environment variable interpolation (use `$${VAR}` for a literal `${VAR}`). Every account must have a unique `api_secret_token` and `matrix_user`; requests and WebSocket connections route to the account matching the presented token. During startup, if an account fails to initialize, the gateway logs the error and continues running as long as at least one configured account initializes.
+
+For each account `<account-id>`, the `<data_dir>/<account-id>/` directory contains `matrix_session.json`, `matrix_store`, and `media_cache.sqlite3`.
 Keeping `matrix_session.json` and `matrix_store` makes the gateway reuse its Matrix device after restart; `media_cache.sqlite3` persists per-room uploaded media references (`media_cache` table) so repeated image uploads are deduplicated across restarts. A new bot
 account attempts cross-signing bootstrap at first login. If another Matrix
 client reports the device as unverified, inspect gateway startup logs:
@@ -92,7 +91,7 @@ client reports the device as unverified, inspect gateway startup logs:
 2. If no cross-signing identity exists, investigate the homeserver response.
 3. If an identity exists but the device is not verified, verify it once from a
    Matrix client or import the applicable secrets.
-4. Do not delete the `/data` volume after the device is trusted.
+4. Do not delete the data volume after the device is trusted.
 
 Older gateway volumes without a recoverable session token must be replaced once;
 all later restarts should retain the same volume.

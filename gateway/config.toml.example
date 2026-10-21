@@ -1,0 +1,7 @@
+port = 8080
+
+[default]
+homeserver_url = "https://matrix.example.org"
+matrix_user = "@n8n-bot:example.org"
+matrix_password = "replace-with-a-long-password"
+api_secret_token = "replace-with-a-long-random-token"

@@ -36,13 +36,14 @@ pub(super) async fn redact_event(
     headers: HeaderMap,
     Json(request): Json<RedactEventRequest>,
 ) -> ApiResult<Json<RedactActionResponse>> {
-    authorize_request(&state.api_secret_token, &headers)?;
+    let account = authorize_request(&state, &headers)?;
     let (target_event_id, reason) =
         validate_redact_request(&request.target_event_id, request.reason.as_deref())?;
 
-    let room = resolve_known_room(&state.client, &request.room_id).await?;
+    let room = resolve_known_room(&account.client, &request.room_id).await?;
     let room_id = room.room_id().to_owned();
     info!(
+        account = %account.account_id,
         room_id = %room_id,
         target_event_id = %target_event_id,
         has_reason = reason.is_some(),
@@ -53,6 +54,7 @@ pub(super) async fn redact_event(
         .await
         .map_err(|error| {
             error!(
+                account = %account.account_id,
                 %error,
                 room_id = %room_id,
                 target_event_id = %target_event_id,
