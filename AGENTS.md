@@ -83,8 +83,8 @@ required. `PORT` defaults to `8080`. `DATA_DIR`
 defaults to `/data` (set `DATA_DIR=./data` when running locally outside a
 container).
 
-The `DATA_DIR` directory (`/data` in containers) contains `matrix_session.json` and `matrix_store`.
-Keeping both makes the gateway reuse its Matrix device after restart. A new bot
+The `DATA_DIR` directory (`/data` in containers) contains `matrix_session.json`, `matrix_store`, and `media_cache.sqlite3`.
+Keeping `matrix_session.json` and `matrix_store` makes the gateway reuse its Matrix device after restart; `media_cache.sqlite3` persists per-room uploaded media references (`media_cache` table) so repeated image uploads are deduplicated across restarts. A new bot
 account attempts cross-signing bootstrap at first login. If another Matrix
 client reports the device as unverified, inspect gateway startup logs:
 
@@ -110,7 +110,7 @@ The API is intentionally private: expose it only to trusted n8n workloads.
 | `POST /v1/messages/text` | Sends `{"roomId":"...","body":"...","mentions":{...},"relationType":"...","targetEventId":"$..."}` as `m.text` (converts Markdown to plain-text `body` and HTML `formatted_body`; `mentions`, `relationType`, and `targetEventId` optional) |
 | `POST /v1/messages/notice` | Sends `{"roomId":"...","body":"...","mentions":{...},"relationType":"...","targetEventId":"$..."}` as `m.notice` (converts Markdown to plain-text `body` and HTML `formatted_body` without triggering notifications; `mentions`, `relationType`, and `targetEventId` optional) |
 | `POST /v1/messages/emote` | Sends `{"roomId":"...","body":"...","mentions":{...},"relationType":"...","targetEventId":"$..."}` as `m.emote` (converts Markdown to plain-text `body` and HTML `formatted_body`; `mentions`, `relationType`, and `targetEventId` optional) |
-| `POST /v1/messages/image` | Sends `multipart/form-data` with a JSON `metadata` part (`roomId`, optional `fileName`, optional `body`, optional `mentions`, optional `relationType` and `targetEventId`) and a binary `media` image part |
+| `POST /v1/messages/image` | Sends `multipart/form-data` with a JSON `metadata` part (`roomId`, optional `fileName`, optional `body`, optional `mentions`, optional `relationType` and `targetEventId`) and a binary `media` image part (deduplicates repeated image uploads per room via `media_cache.sqlite3` keyed by encryption state, MIME type, content length, and SHA-256 hash) |
 | `POST /v1/messages/audio` | Sends `multipart/form-data` with a JSON `metadata` part (`roomId`, optional `fileName`, optional `body`, optional `mentions`, optional `relationType` and `targetEventId`) and a binary `media` Ogg/Opus part as a stable `m.audio` message |
 | `POST /v1/messages/reaction` | Sends `{"roomId":"...","targetEventId":"$...","key":"👍"}` as an `m.reaction` (`m.annotation`) event targeting `targetEventId` |
 | `POST /v1/messages/redact` | Sends `{"roomId":"...","targetEventId":"$...","reason":"..."}` as an `m.room.redaction` event redacting `targetEventId` (`reason` optional) |

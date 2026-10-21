@@ -10,6 +10,10 @@ pub(crate) fn matrix_session_path(data_dir: &Path) -> PathBuf {
     data_dir.join("matrix_session.json")
 }
 
+pub(crate) fn media_cache_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("media_cache.sqlite3")
+}
+
 pub(crate) fn load_session(path: &Path) -> anyhow::Result<MatrixSession> {
     let serialized = std::fs::read_to_string(path)?;
     Ok(serde_json::from_str(&serialized)?)
@@ -50,6 +54,10 @@ mod tests {
         assert_eq!(
             matrix_store_path(Path::new("./data")),
             Path::new("./data/matrix_store")
+        );
+        assert_eq!(
+            media_cache_path(Path::new("./data")),
+            Path::new("./data/media_cache.sqlite3")
         );
     }
 

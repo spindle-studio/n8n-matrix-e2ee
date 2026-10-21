@@ -22,13 +22,14 @@ use crate::{
         error::{ApiResult, client_error, server_error},
         room::resolve_known_room,
     },
-    gateway::AppState,
+    gateway::{AppState, media_cache::MediaCacheKey},
 };
 
 use super::{
     MessageActionResponse, RelatesTo, event::GatewayMessageType, extract_multipart_media,
-    inject_relates_to_value, into_raw_room_message_content, message_action_response,
-    resolve_media_relates_to, resolve_mentions, upload_room_media,
+    inject_relates_to_value, into_raw_room_message_content, is_room_encrypted,
+    message_action_response, resolve_media_relates_to, resolve_mentions,
+    upload_room_media_with_encryption,
 };
 
 pub(super) async fn send_image(
@@ -60,14 +61,31 @@ pub(super) async fn send_image(
     );
     let message_body = trimmed_non_empty(upload.metadata.body.as_deref());
     let size_bytes = upload.data.len() as u64;
-    let source = upload_room_media(
-        &state.client,
-        &room,
-        &content_type,
-        upload.data.to_vec(),
-        "failed to upload Matrix image media",
-    )
-    .await?;
+    let is_encrypted = is_room_encrypted(&room).await?;
+    let cache_key = MediaCacheKey::new(&room_id, is_encrypted, &content_type, &upload.data);
+    let source = if let Some(cached_source) = state.media_cache.get(&cache_key) {
+        info!(
+            room_id = %room_id,
+            file_name,
+            mime_type = %content_type,
+            size_bytes,
+            sha256 = %cache_key.sha256,
+            "reusing cached Matrix image upload"
+        );
+        cached_source
+    } else {
+        let uploaded_source = upload_room_media_with_encryption(
+            &state.client,
+            &room,
+            is_encrypted,
+            &content_type,
+            upload.data.to_vec(),
+            "failed to upload Matrix image media",
+        )
+        .await?;
+        state.media_cache.put(&cache_key, &uploaded_source);
+        uploaded_source
+    };
     let payload = image_room_message_payload(
         message_body,
         file_name.clone(),
