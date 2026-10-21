@@ -1,22 +1,27 @@
 use matrix_sdk::ruma::events::{
     reaction::ReactionEventContent,
-    room::message::{
-        ImageMessageEventContent, MessageFormat, MessageType, Relation, RoomMessageEventContent,
+    room::{
+        member::{MembershipState, OriginalSyncRoomMemberEvent, StrippedRoomMemberEvent},
+        message::{
+            ImageMessageEventContent, MessageFormat, MessageType, Relation,
+            RoomMessageEventContent,
+        },
     },
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::RelatesTo;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct ReactionRelatesTo {
-    rel_type: &'static str,
-    event_id: String,
-    key: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum GatewayRelationType {
+    Thread,
+    Reply,
+    Edit,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) enum GatewayMessageType {
     Text,
     Notice,
@@ -37,16 +42,17 @@ impl GatewayMessageType {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct GatewayMentions {
     user_ids: Vec<String>,
     room: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "event_type")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "eventType", rename_all = "camelCase")]
 pub(crate) enum GatewayEvent {
-    #[serde(rename = "room.message")]
+    #[serde(rename_all = "camelCase")]
     Message {
         room_id: String,
         sender: String,
@@ -58,7 +64,9 @@ pub(crate) enum GatewayEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         mentions: Option<GatewayMentions>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        relates_to: Option<RelatesTo>,
+        relation_type: Option<GatewayRelationType>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target_event_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         file_name: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -72,19 +80,102 @@ pub(crate) enum GatewayEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         duration_seconds: Option<u64>,
     },
-    #[serde(rename = "reaction")]
+    #[serde(rename_all = "camelCase")]
     Reaction {
         room_id: String,
         sender: String,
         event_id: String,
+        target_event_id: String,
         key: String,
-        relates_to: ReactionRelatesTo,
     },
-    #[serde(rename = "room.invite")]
+    #[serde(rename_all = "camelCase")]
     Invite {
         room_id: String,
         sender: String,
+        user_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
+    Join {
+        room_id: String,
+        sender: String,
+        user_id: String,
+        event_id: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Leave {
+        room_id: String,
+        sender: String,
+        user_id: String,
+        event_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+}
+
+fn normalized_reason(reason: Option<&str>) -> Option<String> {
+    reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+pub(crate) fn stripped_room_invite_to_gateway_event(
+    room_id: &str,
+    event: &StrippedRoomMemberEvent,
+) -> Option<GatewayEvent> {
+    if event.content.membership != MembershipState::Invite {
+        return None;
+    }
+
+    Some(GatewayEvent::Invite {
+        room_id: room_id.to_owned(),
+        sender: event.sender.to_string(),
+        user_id: event.state_key.to_string(),
+        reason: normalized_reason(event.content.reason.as_deref()),
+    })
+}
+
+pub(crate) fn room_member_event_to_gateway_event(
+    room_id: &str,
+    event: &OriginalSyncRoomMemberEvent,
+) -> Option<GatewayEvent> {
+    let prev_membership = event
+        .unsigned
+        .prev_content
+        .as_ref()
+        .map(|prev| &prev.membership);
+
+    match &event.content.membership {
+        MembershipState::Join => {
+            if matches!(prev_membership, Some(MembershipState::Join)) {
+                return None;
+            }
+            Some(GatewayEvent::Join {
+                room_id: room_id.to_owned(),
+                sender: event.sender.to_string(),
+                user_id: event.state_key.to_string(),
+                event_id: event.event_id.to_string(),
+            })
+        }
+        MembershipState::Leave | MembershipState::Ban => {
+            if matches!(
+                prev_membership,
+                Some(MembershipState::Leave | MembershipState::Ban)
+            ) {
+                return None;
+            }
+            Some(GatewayEvent::Leave {
+                room_id: room_id.to_owned(),
+                sender: event.sender.to_string(),
+                user_id: event.state_key.to_string(),
+                event_id: event.event_id.to_string(),
+                reason: normalized_reason(event.content.reason.as_deref()),
+            })
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn reaction_content_to_gateway_event(
@@ -103,12 +194,8 @@ pub(crate) fn reaction_content_to_gateway_event(
         room_id: room_id.to_owned(),
         sender: sender.to_owned(),
         event_id: event_id.to_owned(),
+        target_event_id,
         key: key.to_owned(),
-        relates_to: ReactionRelatesTo {
-            rel_type: "annotation",
-            event_id: target_event_id,
-            key: key.to_owned(),
-        },
     })
 }
 
@@ -158,6 +245,10 @@ pub(crate) fn room_message_content_to_gateway_event(
         user_ids: mentions.user_ids.iter().map(ToString::to_string).collect(),
         room: mentions.room,
     });
+    let relation_type = relates_to.as_ref().map(RelatesTo::relation_type);
+    let target_event_id = relates_to
+        .as_ref()
+        .map(|rel| rel.target_event_id().to_owned());
     match msgtype {
         MessageType::Text(content) => Some(GatewayEvent::Message {
             room_id: room_id.to_owned(),
@@ -171,7 +262,8 @@ pub(crate) fn room_message_content_to_gateway_event(
             event_id: event_id.to_owned(),
             message_type: GatewayMessageType::Text,
             mentions,
-            relates_to,
+            relation_type,
+            target_event_id,
             file_name: None,
             mime_type: None,
             size_bytes: None,
@@ -191,7 +283,8 @@ pub(crate) fn room_message_content_to_gateway_event(
             event_id: event_id.to_owned(),
             message_type: GatewayMessageType::Notice,
             mentions,
-            relates_to,
+            relation_type,
+            target_event_id,
             file_name: None,
             mime_type: None,
             size_bytes: None,
@@ -211,7 +304,8 @@ pub(crate) fn room_message_content_to_gateway_event(
             event_id: event_id.to_owned(),
             message_type: GatewayMessageType::Emote,
             mentions,
-            relates_to,
+            relation_type,
+            target_event_id,
             file_name: None,
             mime_type: None,
             size_bytes: None,
@@ -229,7 +323,8 @@ pub(crate) fn room_message_content_to_gateway_event(
                 event_id: event_id.to_owned(),
                 message_type: GatewayMessageType::Image,
                 mentions,
-                relates_to,
+                relation_type,
+                target_event_id,
                 file_name: Some(content.filename().to_owned()),
                 mime_type: content.info.as_ref().and_then(|info| info.mimetype.clone()),
                 size_bytes,
@@ -246,7 +341,8 @@ pub(crate) fn room_message_content_to_gateway_event(
             event_id: event_id.to_owned(),
             message_type: GatewayMessageType::Audio,
             mentions,
-            relates_to,
+            relation_type,
+            target_event_id,
             file_name: Some(content.filename().to_owned()),
             mime_type: content.info.as_ref().and_then(|info| info.mimetype.clone()),
             size_bytes: content
@@ -305,7 +401,8 @@ mod tests {
             event_id: "$message".to_owned(),
             message_type: GatewayMessageType::Text,
             mentions: None,
-            relates_to: None,
+            relation_type: None,
+            target_event_id: None,
             file_name: None,
             mime_type: None,
             size_bytes: None,
@@ -317,12 +414,12 @@ mod tests {
         assert_eq!(
             serde_json::to_value(message).unwrap(),
             serde_json::json!({
-                "event_type": "room.message",
-                "room_id": "!room:example.org",
+                "eventType": "message",
+                "roomId": "!room:example.org",
                 "sender": "@sender:example.org",
                 "body": "Hello",
-                "event_id": "$message",
-                "message_type": "text"
+                "eventId": "$message",
+                "messageType": "text"
             })
         );
     }
@@ -354,13 +451,13 @@ mod tests {
             assert_eq!(
                 serde_json::to_value(event).unwrap(),
                 serde_json::json!({
-                    "event_type": "room.message",
-                    "room_id": "!room:example.org",
+                    "eventType": "message",
+                    "roomId": "!room:example.org",
                     "sender": "@sender:example.org",
                     "body": "Hello world",
-                    "formatted_body": "<p>Hello <b>world</b></p>",
-                    "event_id": "$html",
-                    "message_type": expected_type
+                    "formattedBody": "<p>Hello <b>world</b></p>",
+                    "eventId": "$html",
+                    "messageType": expected_type
                 })
             );
         }
@@ -376,7 +473,8 @@ mod tests {
             event_id: "$image".to_owned(),
             message_type: GatewayMessageType::Image,
             mentions: None,
-            relates_to: None,
+            relation_type: None,
+            target_event_id: None,
             file_name: Some("cat.png".to_owned()),
             mime_type: Some("image/png".to_owned()),
             size_bytes: Some(42),
@@ -387,8 +485,8 @@ mod tests {
         assert_eq!(
             serde_json::to_value(message).unwrap(),
             serde_json::json!({
-                "event_type": "room.message", "room_id": "!room:example.org", "sender": "@sender:example.org", "body": "Cat", "event_id": "$image",
-                "message_type": "image", "file_name": "cat.png", "mime_type": "image/png", "size_bytes": 42, "width": 640, "height": 480
+                "eventType": "message", "roomId": "!room:example.org", "sender": "@sender:example.org", "body": "Cat", "eventId": "$image",
+                "messageType": "image", "fileName": "cat.png", "mimeType": "image/png", "sizeBytes": 42, "width": 640, "height": 480
             })
         );
     }
@@ -417,16 +515,16 @@ mod tests {
         assert_eq!(
             serde_json::to_value(event).unwrap(),
             serde_json::json!({
-                "event_type": "room.message",
-                "room_id": "!room:example.org",
+                "eventType": "message",
+                "roomId": "!room:example.org",
                 "sender": "@sender:example.org",
                 "body": "Audio message",
-                "event_id": "$audio",
-                "message_type": "audio",
-                "file_name": "audio.ogg",
-                "mime_type": "audio/ogg",
-                "size_bytes": 42,
-                "duration_seconds": 3,
+                "eventId": "$audio",
+                "messageType": "audio",
+                "fileName": "audio.ogg",
+                "mimeType": "audio/ogg",
+                "sizeBytes": 42,
+                "durationSeconds": 3,
             })
         );
     }
@@ -450,7 +548,7 @@ mod tests {
             )
             .unwrap();
             let payload = serde_json::to_value(event).unwrap();
-            assert!(payload.get("formatted_body").is_none(), "{msgtype}");
+            assert!(payload.get("formattedBody").is_none(), "{msgtype}");
             assert!(payload.get("caption").is_none(), "{msgtype}");
         }
     }
@@ -460,19 +558,19 @@ mod tests {
             for (metadata, expected) in [
                 (
                     serde_json::json!({}),
-                    serde_json::json!({"user_ids": [], "room": false}),
+                    serde_json::json!({"userIds": [], "room": false}),
                 ),
                 (
                     serde_json::json!({"room": true}),
-                    serde_json::json!({"user_ids": [], "room": true}),
+                    serde_json::json!({"userIds": [], "room": true}),
                 ),
                 (
                     serde_json::json!({"user_ids": ["@ben:example.org"]}),
-                    serde_json::json!({"user_ids": ["@ben:example.org"], "room": false}),
+                    serde_json::json!({"userIds": ["@ben:example.org"], "room": false}),
                 ),
                 (
                     serde_json::json!({"user_ids": ["@ben:example.org", "@alice:example.org", "@ben:example.org"], "room": true}),
-                    serde_json::json!({"user_ids": ["@alice:example.org", "@ben:example.org"], "room": true}),
+                    serde_json::json!({"userIds": ["@alice:example.org", "@ben:example.org"], "room": true}),
                 ),
             ] {
                 let content: RoomMessageEventContent = serde_json::from_value(serde_json::json!({
@@ -547,12 +645,10 @@ mod tests {
             )
             .unwrap();
             let thread_payload = serde_json::to_value(thread_event).unwrap();
+            assert_eq!(thread_payload["relationType"], "thread", "{msgtype}");
             assert_eq!(
-                thread_payload["relates_to"],
-                serde_json::json!({
-                    "rel_type": "thread",
-                    "event_id": "$root:example.org"
-                }),
+                thread_payload["targetEventId"],
+                "$root:example.org",
                 "{msgtype}"
             );
 
@@ -575,12 +671,10 @@ mod tests {
             )
             .unwrap();
             let reply_payload = serde_json::to_value(reply_event).unwrap();
+            assert_eq!(reply_payload["relationType"], "reply", "{msgtype}");
             assert_eq!(
-                reply_payload["relates_to"],
-                serde_json::json!({
-                    "rel_type": "reply",
-                    "event_id": "$target:example.org"
-                }),
+                reply_payload["targetEventId"],
+                "$target:example.org",
                 "{msgtype}"
             );
         }
@@ -626,21 +720,19 @@ mod tests {
             assert_eq!(
                 payload,
                 serde_json::json!({
-                    "event_type": "room.message",
-                    "room_id": "!room:example.org",
+                    "eventType": "message",
+                    "roomId": "!room:example.org",
                     "sender": "@sender:example.org",
                     "body": "Edited message",
-                    "formatted_body": "<p>Edited <strong>message</strong></p>",
-                    "event_id": "$edit_event",
-                    "message_type": expected_type,
+                    "formattedBody": "<p>Edited <strong>message</strong></p>",
+                    "eventId": "$edit_event",
+                    "messageType": expected_type,
                     "mentions": {
-                        "user_ids": ["@alice:example.org"],
+                        "userIds": ["@alice:example.org"],
                         "room": false
                     },
-                    "relates_to": {
-                        "rel_type": "edit",
-                        "event_id": "$original:example.org"
-                    }
+                    "relationType": "edit",
+                    "targetEventId": "$original:example.org"
                 })
             );
         }
@@ -666,16 +758,12 @@ mod tests {
         assert_eq!(
             serde_json::to_value(event).unwrap(),
             serde_json::json!({
-                "event_type": "reaction",
-                "room_id": "!room:example.org",
+                "eventType": "reaction",
+                "roomId": "!room:example.org",
                 "sender": "@sender:example.org",
-                "event_id": "$reaction_event",
-                "key": "👍",
-                "relates_to": {
-                    "rel_type": "annotation",
-                    "event_id": "$target:example.org",
-                    "key": "👍"
-                }
+                "eventId": "$reaction_event",
+                "targetEventId": "$target:example.org",
+                "key": "👍"
             })
         );
 
@@ -699,17 +787,122 @@ mod tests {
     }
 
     #[test]
+    fn converts_room_invite_join_and_leave_events() {
+        let stripped_invite: StrippedRoomMemberEvent = serde_json::from_value(serde_json::json!({
+            "type": "m.room.member",
+            "sender": "@inviter:example.org",
+            "state_key": "@bot:example.org",
+            "content": {
+                "membership": "invite",
+                "reason": " Join war room "
+            }
+        }))
+        .unwrap();
+        let invite_event =
+            stripped_room_invite_to_gateway_event("!room:example.org", &stripped_invite).unwrap();
+        assert_eq!(
+            serde_json::to_value(invite_event).unwrap(),
+            serde_json::json!({
+                "eventType": "invite",
+                "roomId": "!room:example.org",
+                "sender": "@inviter:example.org",
+                "userId": "@bot:example.org",
+                "reason": "Join war room"
+            })
+        );
+
+        let join_member: OriginalSyncRoomMemberEvent = serde_json::from_value(serde_json::json!({
+            "type": "m.room.member",
+            "event_id": "$join_event:example.org",
+            "sender": "@alice:example.org",
+            "state_key": "@alice:example.org",
+            "origin_server_ts": 1,
+            "content": {
+                "membership": "join"
+            }
+        }))
+        .unwrap();
+        let join_event =
+            room_member_event_to_gateway_event("!room:example.org", &join_member).unwrap();
+        assert_eq!(
+            serde_json::to_value(join_event).unwrap(),
+            serde_json::json!({
+                "eventType": "join",
+                "roomId": "!room:example.org",
+                "sender": "@alice:example.org",
+                "userId": "@alice:example.org",
+                "eventId": "$join_event:example.org"
+            })
+        );
+
+        let profile_change: OriginalSyncRoomMemberEvent =
+            serde_json::from_value(serde_json::json!({
+                "type": "m.room.member",
+                "event_id": "$profile_event:example.org",
+                "sender": "@alice:example.org",
+                "state_key": "@alice:example.org",
+                "origin_server_ts": 2,
+                "content": {
+                    "membership": "join",
+                    "displayname": "Alice"
+                },
+                "unsigned": {
+                    "prev_content": {
+                        "membership": "join"
+                    }
+                }
+            }))
+            .unwrap();
+        assert!(room_member_event_to_gateway_event("!room:example.org", &profile_change).is_none());
+
+        let leave_member: OriginalSyncRoomMemberEvent =
+            serde_json::from_value(serde_json::json!({
+                "type": "m.room.member",
+                "event_id": "$leave_event:example.org",
+                "sender": "@mod:example.org",
+                "state_key": "@bob:example.org",
+                "origin_server_ts": 3,
+                "content": {
+                    "membership": "leave",
+                    "reason": "  Kicked for spam  "
+                },
+                "unsigned": {
+                    "prev_content": {
+                        "membership": "join"
+                    }
+                }
+            }))
+            .unwrap();
+        let leave_event =
+            room_member_event_to_gateway_event("!room:example.org", &leave_member).unwrap();
+        assert_eq!(
+            serde_json::to_value(leave_event).unwrap(),
+            serde_json::json!({
+                "eventType": "leave",
+                "roomId": "!room:example.org",
+                "sender": "@mod:example.org",
+                "userId": "@bob:example.org",
+                "eventId": "$leave_event:example.org",
+                "reason": "Kicked for spam"
+            })
+        );
+    }
+
+    #[test]
     fn serializes_room_invite_events() {
         let event = GatewayEvent::Invite {
             room_id: "!room:example.org".to_owned(),
             sender: "@inviter:example.org".to_owned(),
+            user_id: "@bot:example.org".to_owned(),
+            reason: None,
         };
         assert_eq!(
             serde_json::to_value(event).unwrap(),
             serde_json::json!({
-                "event_type": "room.invite",
-                "room_id": "!room:example.org",
-                "sender": "@inviter:example.org"
+                "eventType": "invite",
+                "roomId": "!room:example.org",
+                "sender": "@inviter:example.org",
+                "userId": "@bot:example.org"
             })
         );
     }

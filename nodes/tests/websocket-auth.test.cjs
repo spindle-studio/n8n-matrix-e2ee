@@ -34,14 +34,14 @@ class Socket extends EventTarget {
 	}
 }
 const roomEvent = {
-	event_type: 'room.message',
-	room_id: '!room:example.org',
+	eventType: 'message',
+	roomId: '!room:example.org',
 	sender: '@sender:example.org',
-	event_id: '$event',
+	eventId: '$event',
 	body: 'hello',
-	message_type: 'text',
+	messageType: 'text',
 };
-async function start(t) {
+async function start(t, params = {}) {
 	const original = global.WebSocket;
 	global.WebSocket = Socket;
 	Socket.instances = [];
@@ -52,7 +52,12 @@ async function start(t) {
 			baseUrl: 'https://gateway.example.org',
 			apiToken: 'test-secret',
 		}),
-		getNodeParameter: (name) => (name === 'downloadMedia' ? false : 'media'),
+		getNodeParameter: (name, fallback) => {
+			if (name in params) return params[name];
+			if (name === 'downloadMedia') return false;
+			if (name === 'binaryPropertyName') return 'media';
+			return fallback;
+		},
 		getNode: () => ({
 			name: 'Test trigger',
 			type: 'matrixE2eeTrigger',
@@ -117,18 +122,26 @@ test('mentions are optional and preserved for text, notice, emote, image, and au
 	const { socket, emitted } = await start(t);
 	socket.open();
 	socket.message({ type: 'authenticated' });
-	for (const message_type of ['text', 'notice', 'emote', 'image', 'audio']) {
-		for (const mentions of [undefined, { user_ids: [], room: false },
-			{ user_ids: ['@ben:example.org'], room: false },
-			{ user_ids: [], room: true },
-			{ user_ids: ['@ben:example.org'], room: true }]) {
-			socket.message({ ...roomEvent, message_type, ...(mentions === undefined ? {} : { mentions }), future_field: true });
+	for (const messageType of ['text', 'notice', 'emote', 'image', 'audio']) {
+		for (const mentions of [
+			undefined,
+			{ userIds: [], room: false },
+			{ userIds: ['@ben:example.org'], room: false },
+			{ userIds: [], room: true },
+			{ userIds: ['@ben:example.org'], room: true },
+		]) {
+			socket.message({
+				...roomEvent,
+				messageType,
+				...(mentions === undefined ? {} : { mentions }),
+				futureField: true,
+			});
 			await delay(0);
 			const output = emitted.at(-1)[0][0].json;
-			assert.equal(output.message_type, message_type);
+			assert.equal(output.messageType, messageType);
 			assert.deepEqual(output.mentions, mentions);
 			assert.equal(Object.hasOwn(output, 'mentions'), mentions !== undefined);
-			assert.equal(Object.hasOwn(output, 'future_field'), false);
+			assert.equal(Object.hasOwn(output, 'futureField'), false);
 		}
 	}
 	assert.equal(emitted.length, 25);
@@ -138,9 +151,16 @@ test('invalid mention metadata is rejected without breaking subsequent events', 
 	const { socket, emitted } = await start(t);
 	socket.open();
 	socket.message({ type: 'authenticated' });
-	for (const mentions of [null, [], 'invalid', {}, { user_ids: [], room: 'true' },
-		{ user_ids: '@ben:example.org', room: false }, { user_ids: [1], room: false },
-		{ user_ids: [' '], room: false }]) {
+	for (const mentions of [
+		null,
+		[],
+		'invalid',
+		{},
+		{ userIds: [], room: 'true' },
+		{ userIds: '@ben:example.org', room: false },
+		{ userIds: [1], room: false },
+		{ userIds: [' '], room: false },
+	]) {
 		socket.message({ ...roomEvent, mentions });
 	}
 	await delay(0);
@@ -150,47 +170,67 @@ test('invalid mention metadata is rejected without breaking subsequent events', 
 	assert.equal(emitted.length, 1);
 });
 
-test('relates_to is optional and preserved for thread, reply, and edit events', async (t) => {
-	const { socket, emitted } = await start(t);
+test('relationType and targetEventId are optional and preserved for thread, reply, and edit events', async (t) => {
+	const { socket, emitted } = await start(t, { includeEdits: true });
 	socket.open();
 	socket.message({ type: 'authenticated' });
-	for (const message_type of ['text', 'notice', 'emote', 'image', 'audio']) {
-		for (const relates_to of [
+	for (const messageType of ['text', 'notice', 'emote', 'image', 'audio']) {
+		for (const relation of [
 			undefined,
-			{ rel_type: 'thread', event_id: '$root:example.org' },
-			{ rel_type: 'reply', event_id: '$reply:example.org' },
-			{ rel_type: 'edit', event_id: '$edit:example.org' },
+			{ relationType: 'thread', targetEventId: '$root:example.org' },
+			{ relationType: 'reply', targetEventId: '$reply:example.org' },
+			{ relationType: 'edit', targetEventId: '$edit:example.org' },
 		]) {
 			socket.message({
 				...roomEvent,
-				message_type,
-				...(relates_to === undefined ? {} : { relates_to }),
+				messageType,
+				...(relation === undefined ? {} : relation),
 			});
 			await delay(0);
 			const output = emitted.at(-1)[0][0].json;
-			assert.equal(output.message_type, message_type);
-			assert.deepEqual(output.relates_to, relates_to);
-			assert.equal(Object.hasOwn(output, 'relates_to'), relates_to !== undefined);
+			assert.equal(output.messageType, messageType);
+			assert.equal(output.relationType, relation?.relationType);
+			assert.equal(output.targetEventId, relation?.targetEventId);
+			assert.equal(Object.hasOwn(output, 'relationType'), relation !== undefined);
+			assert.equal(Object.hasOwn(output, 'targetEventId'), relation !== undefined);
 		}
 	}
 	assert.equal(emitted.length, 20);
 });
 
-test('invalid relates_to metadata is rejected without breaking subsequent events', async (t) => {
+test('edits are ignored by default in On Message mode unless includeEdits is enabled', async (t) => {
 	const { socket, emitted } = await start(t);
 	socket.open();
 	socket.message({ type: 'authenticated' });
-	for (const relates_to of [
-		null,
-		[],
-		'invalid',
-		{},
-		{ rel_type: 'unknown', event_id: '$abc:example.org' },
-		{ rel_type: 'thread', event_id: 'not-an-event-id' },
-		{ rel_type: 'reply', event_id: '$' },
-		{ rel_type: 'edit', event_id: '$has space' },
+
+	socket.message({
+		...roomEvent,
+		relationType: 'edit',
+		targetEventId: '$edit:example.org',
+	});
+	socket.message({
+		...roomEvent,
+		relationType: 'reply',
+		targetEventId: '$reply:example.org',
+	});
+	await delay(0);
+	assert.equal(emitted.length, 1);
+	assert.equal(emitted[0][0][0].json.relationType, 'reply');
+});
+
+test('invalid relation metadata is rejected without breaking subsequent events', async (t) => {
+	const { socket, emitted } = await start(t);
+	socket.open();
+	socket.message({ type: 'authenticated' });
+	for (const invalidRelation of [
+		{ relationType: 'thread' },
+		{ targetEventId: '$abc:example.org' },
+		{ relationType: 'unknown', targetEventId: '$abc:example.org' },
+		{ relationType: 'thread', targetEventId: 'not-an-event-id' },
+		{ relationType: 'reply', targetEventId: '$' },
+		{ relationType: 'edit', targetEventId: '$has space' },
 	]) {
-		socket.message({ ...roomEvent, relates_to });
+		socket.message({ ...roomEvent, ...invalidRelation });
 	}
 	await delay(0);
 	assert.equal(emitted.length, 0);
@@ -199,24 +239,21 @@ test('invalid relates_to metadata is rejected without breaking subsequent events
 	assert.equal(emitted.length, 1);
 });
 
-test('reaction events are preserved and malformed reaction events are rejected', async (t) => {
-	const { socket, emitted } = await start(t);
+test('reaction events are preserved in On Reaction mode and malformed or non-reaction events are ignored', async (t) => {
+	const { socket, emitted } = await start(t, { event: 'reaction' });
 	socket.open();
 	socket.message({ type: 'authenticated' });
 
 	const reactionEvent = {
-		event_type: 'reaction',
-		room_id: '!room:example.org',
+		eventType: 'reaction',
+		roomId: '!room:example.org',
 		sender: '@sender:example.org',
-		event_id: '$reaction_event:example.org',
+		eventId: '$reaction_event:example.org',
+		targetEventId: '$target:example.org',
 		key: '👍',
-		relates_to: {
-			rel_type: 'annotation',
-			event_id: '$target:example.org',
-			key: '👍',
-		},
 	};
-	socket.message({ ...reactionEvent, future_field: true });
+	socket.message(roomEvent);
+	socket.message({ ...reactionEvent, futureField: true });
 	await delay(0);
 	assert.equal(emitted.length, 1);
 	assert.deepEqual(emitted[0][0][0].json, reactionEvent);
@@ -224,10 +261,9 @@ test('reaction events are preserved and malformed reaction events are rejected',
 
 	for (const invalidReaction of [
 		{ ...reactionEvent, key: '   ' },
-		{ ...reactionEvent, relates_to: undefined },
-		{ ...reactionEvent, relates_to: { rel_type: 'reply', event_id: '$target:example.org', key: '👍' } },
-		{ ...reactionEvent, relates_to: { rel_type: 'annotation', event_id: 'bad-id', key: '👍' } },
-		{ ...reactionEvent, relates_to: { rel_type: 'annotation', event_id: '$target:example.org', key: '❌' } },
+		{ ...reactionEvent, targetEventId: undefined },
+		{ ...reactionEvent, targetEventId: 'bad-id' },
+		{ ...reactionEvent, eventId: 'bad-id' },
 	]) {
 		socket.message(invalidReaction);
 	}
@@ -235,66 +271,130 @@ test('reaction events are preserved and malformed reaction events are rejected',
 	assert.equal(emitted.length, 1);
 });
 
-test('room.invite events are preserved and malformed invite events are rejected', async (t) => {
-	const { socket, emitted } = await start(t);
+test('room invite, join, and leave events are preserved in On Room Event mode and filtered by roomEvents', async (t) => {
+	const { socket, emitted } = await start(t, {
+		event: 'room',
+		roomEvents: ['invite', 'join', 'leave'],
+	});
 	socket.open();
 	socket.message({ type: 'authenticated' });
 
 	const inviteEvent = {
-		event_type: 'room.invite',
-		room_id: '!room:example.org',
+		eventType: 'invite',
+		roomId: '!room:example.org',
 		sender: '@inviter:example.org',
+		userId: '@bot:example.org',
 	};
-	socket.message({ ...inviteEvent, future_field: true });
-	await delay(0);
-	assert.equal(emitted.length, 1);
-	assert.deepEqual(emitted[0][0][0].json, inviteEvent);
-	assert.equal(emitted[0][0][0].binary, undefined);
+	const joinEvent = {
+		eventType: 'join',
+		roomId: '!room:example.org',
+		sender: '@alice:example.org',
+		userId: '@alice:example.org',
+		eventId: '$join:example.org',
+	};
+	const leaveEvent = {
+		eventType: 'leave',
+		roomId: '!room:example.org',
+		sender: '@mod:example.org',
+		userId: '@bob:example.org',
+		eventId: '$leave:example.org',
+		reason: 'Kicked for spam',
+	};
 
-	for (const invalidInvite of [
-		{ ...inviteEvent, room_id: '   ' },
+	socket.message(roomEvent);
+	socket.message({ ...inviteEvent, futureField: true });
+	socket.message(joinEvent);
+	socket.message(leaveEvent);
+	await delay(0);
+	assert.equal(emitted.length, 3);
+	assert.deepEqual(emitted[0][0][0].json, inviteEvent);
+	assert.deepEqual(emitted[1][0][0].json, joinEvent);
+	assert.deepEqual(emitted[2][0][0].json, leaveEvent);
+
+	for (const invalidRoomEvent of [
+		{ ...inviteEvent, roomId: '   ' },
 		{ ...inviteEvent, sender: '   ' },
-		{ event_type: 'room.invite', room_id: '!room:example.org' },
-		{ event_type: 'room.invite', sender: '@inviter:example.org' },
+		{ ...inviteEvent, userId: '   ' },
+		{ ...joinEvent, eventId: 'bad-id' },
+		{ ...leaveEvent, eventId: 'bad-id' },
+		{ ...leaveEvent, reason: 123 },
 	]) {
-		socket.message(invalidInvite);
+		socket.message(invalidRoomEvent);
 	}
 	await delay(0);
-	assert.equal(emitted.length, 1);
+	assert.equal(emitted.length, 3);
 });
 
-test('formatted_body is preserved on text/notice/emote events and rejected on image/audio or when malformed', async (t) => {
+test('room event trigger respects selective roomEvents filter', async (t) => {
+	const { socket, emitted } = await start(t, {
+		event: 'room',
+		roomEvents: ['invite'],
+	});
+	socket.open();
+	socket.message({ type: 'authenticated' });
+
+	socket.message({
+		eventType: 'join',
+		roomId: '!room:example.org',
+		sender: '@alice:example.org',
+		userId: '@alice:example.org',
+		eventId: '$join:example.org',
+	});
+	socket.message({
+		eventType: 'invite',
+		roomId: '!room:example.org',
+		sender: '@inviter:example.org',
+		userId: '@bot:example.org',
+	});
+	await delay(0);
+	assert.equal(emitted.length, 1);
+	assert.equal(emitted[0][0][0].json.eventType, 'invite');
+});
+
+test('formattedBody is preserved on text/notice/emote events and rejected on image/audio or when malformed', async (t) => {
 	const { socket, emitted } = await start(t);
 	socket.open();
 	socket.message({ type: 'authenticated' });
 
-	socket.message({ ...roomEvent, message_type: 'text', formatted_body: '<p><strong>hello</strong></p>' });
-	socket.message({ ...roomEvent, message_type: 'notice', formatted_body: '<p><em>notice</em></p>' });
-	socket.message({ ...roomEvent, message_type: 'emote', formatted_body: '<p>waves <strong>excitedly</strong></p>' });
+	socket.message({
+		...roomEvent,
+		messageType: 'text',
+		formattedBody: '<p><strong>hello</strong></p>',
+	});
+	socket.message({
+		...roomEvent,
+		messageType: 'notice',
+		formattedBody: '<p><em>notice</em></p>',
+	});
+	socket.message({
+		...roomEvent,
+		messageType: 'emote',
+		formattedBody: '<p>waves <strong>excitedly</strong></p>',
+	});
 	await delay(0);
 	assert.equal(emitted.length, 3);
-	assert.equal(emitted[0][0][0].json.formatted_body, '<p><strong>hello</strong></p>');
-	assert.equal(emitted[1][0][0].json.message_type, 'notice');
-	assert.equal(emitted[1][0][0].json.formatted_body, '<p><em>notice</em></p>');
-	assert.equal(emitted[2][0][0].json.message_type, 'emote');
-	assert.equal(emitted[2][0][0].json.formatted_body, '<p>waves <strong>excitedly</strong></p>');
+	assert.equal(emitted[0][0][0].json.formattedBody, '<p><strong>hello</strong></p>');
+	assert.equal(emitted[1][0][0].json.messageType, 'notice');
+	assert.equal(emitted[1][0][0].json.formattedBody, '<p><em>notice</em></p>');
+	assert.equal(emitted[2][0][0].json.messageType, 'emote');
+	assert.equal(emitted[2][0][0].json.formattedBody, '<p>waves <strong>excitedly</strong></p>');
 
 	for (const invalidEvent of [
-		{ ...roomEvent, message_type: 'text', formatted_body: 123 },
-		{ ...roomEvent, message_type: 'notice', formatted_body: 123 },
-		{ ...roomEvent, message_type: 'emote', formatted_body: 123 },
-		{ ...roomEvent, message_type: 'image', formatted_body: '<b>caption</b>' },
-		{ ...roomEvent, message_type: 'audio', formatted_body: '<b>caption</b>' },
+		{ ...roomEvent, messageType: 'text', formattedBody: 123 },
+		{ ...roomEvent, messageType: 'notice', formattedBody: 123 },
+		{ ...roomEvent, messageType: 'emote', formattedBody: 123 },
+		{ ...roomEvent, messageType: 'image', formattedBody: '<b>caption</b>' },
+		{ ...roomEvent, messageType: 'audio', formattedBody: '<b>caption</b>' },
 	]) {
 		socket.message(invalidEvent);
 	}
 	await delay(0);
 	assert.equal(emitted.length, 3);
 
-	socket.message({ ...roomEvent, message_type: 'text' });
+	socket.message({ ...roomEvent, messageType: 'text' });
 	await delay(0);
 	assert.equal(emitted.length, 4);
-	assert.equal(Object.hasOwn(emitted[3][0][0].json, 'formatted_body'), false);
+	assert.equal(Object.hasOwn(emitted[3][0][0].json, 'formattedBody'), false);
 	assert.equal(Object.hasOwn(emitted[3][0][0].json, 'caption'), false);
 });
 
@@ -343,7 +443,7 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/messages/text',
 		body: {
-			room_id: '!room:example.org',
+			roomId: '!room:example.org',
 			body: 'Hello **Markdown**',
 		},
 		json: true,
@@ -365,10 +465,10 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/messages/text',
 		body: {
-			room_id: '!room:example.org',
+			roomId: '!room:example.org',
 			body: 'Ping @room and @alice:example.org',
 			mentions: {
-				user_ids: ['@alice:example.org', '@ben:example.org'],
+				userIds: ['@alice:example.org', '@ben:example.org'],
 				room: true,
 			},
 		},
@@ -390,10 +490,10 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/messages/notice',
 		body: {
-			room_id: '!room:example.org',
+			roomId: '!room:example.org',
 			body: 'Silent **notice**',
 			mentions: {
-				user_ids: ['@alice:example.org'],
+				userIds: ['@alice:example.org'],
 				room: false,
 			},
 		},
@@ -415,10 +515,10 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/messages/emote',
 		body: {
-			room_id: '!room:example.org',
+			roomId: '!room:example.org',
 			body: 'waves **hello**',
 			mentions: {
-				user_ids: ['@alice:example.org'],
+				userIds: ['@alice:example.org'],
 				room: false,
 			},
 		},
@@ -457,11 +557,11 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		const mediaPart = req.body.get('media');
 		assert.equal(metadataPart.type, 'application/json');
 		assert.deepEqual(JSON.parse(await metadataPart.text()), {
-			room_id: '!room:example.org',
-			file_name: 'photo.png',
+			roomId: '!room:example.org',
+			fileName: 'photo.png',
 			body: 'Alt caption',
 			mentions: {
-				user_ids: ['@alice:example.org'],
+				userIds: ['@alice:example.org'],
 				room: true,
 			},
 		});
@@ -497,8 +597,8 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		const mediaPart = req.body.get('media');
 		assert.equal(metadataPart.type, 'application/json');
 		assert.deepEqual(JSON.parse(await metadataPart.text()), {
-			room_id: '!room:example.org',
-			file_name: 'audio-message.ogg',
+			roomId: '!room:example.org',
+			fileName: 'audio-message.ogg',
 			body: 'Voice note',
 		});
 		assert.equal(mediaPart.type, 'audio/ogg');
@@ -534,9 +634,9 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/typing',
 		body: {
-			room_id: '!room:example.org',
+			roomId: '!room:example.org',
 			typing: true,
-			timeout_seconds: 25,
+			timeoutSeconds: 25,
 		},
 		json: true,
 	});
@@ -552,7 +652,7 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/typing',
 		body: {
-			room_id: '!room:example.org',
+			roomId: '!room:example.org',
 			typing: false,
 		},
 		json: true,
@@ -572,12 +672,10 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/messages/text',
 		body: {
-			room_id: '!room:example.org',
+			roomId: '!room:example.org',
 			body: 'Thread reply',
-			relates_to: {
-				rel_type: 'thread',
-				event_id: '$root:example.org',
-			},
+			relationType: 'thread',
+			targetEventId: '$root:example.org',
 		},
 		json: true,
 	});
@@ -596,12 +694,10 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/messages/notice',
 		body: {
-			room_id: '!room:example.org',
+			roomId: '!room:example.org',
 			body: 'Inline notice reply',
-			relates_to: {
-				rel_type: 'reply',
-				event_id: '$target:example.org',
-			},
+			relationType: 'reply',
+			targetEventId: '$target:example.org',
 		},
 		json: true,
 	});
@@ -629,13 +725,11 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		const req = requests.at(-1);
 		const metadataPart = req.body.get('metadata');
 		assert.deepEqual(JSON.parse(await metadataPart.text()), {
-			room_id: '!room:example.org',
-			file_name: 'diagram.png',
+			roomId: '!room:example.org',
+			fileName: 'diagram.png',
 			body: 'Threaded diagram',
-			relates_to: {
-				rel_type: 'thread',
-				event_id: '$root:example.org',
-			},
+			relationType: 'thread',
+			targetEventId: '$root:example.org',
 		});
 	}
 
@@ -661,12 +755,10 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		const req = requests.at(-1);
 		const metadataPart = req.body.get('metadata');
 		assert.deepEqual(JSON.parse(await metadataPart.text()), {
-			room_id: '!room:example.org',
-			file_name: 'audio-message.ogg',
-			relates_to: {
-				rel_type: 'reply',
-				event_id: '$voice:example.org',
-			},
+			roomId: '!room:example.org',
+			fileName: 'audio-message.ogg',
+			relationType: 'reply',
+			targetEventId: '$voice:example.org',
 		});
 	}
 
@@ -686,16 +778,14 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/messages/text',
 		body: {
-			room_id: '!room:example.org',
+			roomId: '!room:example.org',
 			body: 'Updated **text**',
 			mentions: {
-				user_ids: ['@alice:example.org'],
+				userIds: ['@alice:example.org'],
 				room: false,
 			},
-			relates_to: {
-				rel_type: 'edit',
-				event_id: '$original:example.org',
-			},
+			relationType: 'edit',
+			targetEventId: '$original:example.org',
 		},
 		json: true,
 	});
@@ -713,12 +803,10 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/messages/notice',
 		body: {
-			room_id: '!room:example.org',
+			roomId: '!room:example.org',
 			body: 'Updated notice',
-			relates_to: {
-				rel_type: 'edit',
-				event_id: '$original_notice:example.org',
-			},
+			relationType: 'edit',
+			targetEventId: '$original_notice:example.org',
 		},
 		json: true,
 	});
@@ -736,12 +824,10 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/messages/emote',
 		body: {
-			room_id: '!room:example.org',
+			roomId: '!room:example.org',
 			body: 'waves **again**',
-			relates_to: {
-				rel_type: 'edit',
-				event_id: '$original_emote:example.org',
-			},
+			relationType: 'edit',
+			targetEventId: '$original_emote:example.org',
 		},
 		json: true,
 	});
@@ -787,8 +873,8 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/messages/reaction',
 		body: {
-			room_id: '!room:example.org',
-			event_id: '$target_message:example.org',
+			roomId: '!room:example.org',
+			targetEventId: '$target_message:example.org',
 			key: '👍',
 		},
 		json: true,
@@ -807,8 +893,8 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/messages/reaction',
 		body: {
-			room_id: '!room:example.org',
-			event_id: '$target_message:example.org',
+			roomId: '!room:example.org',
+			targetEventId: '$target_message:example.org',
 			key: '🦊',
 		},
 		json: true,
@@ -839,8 +925,8 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/messages/redact',
 		body: {
-			room_id: '!room:example.org',
-			event_id: '$target_message:example.org',
+			roomId: '!room:example.org',
+			targetEventId: '$target_message:example.org',
 		},
 		json: true,
 	});
@@ -859,8 +945,8 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/messages/redact',
 		body: {
-			room_id: '!room:example.org',
-			event_id: '$target_message:example.org',
+			roomId: '!room:example.org',
+			targetEventId: '$target_message:example.org',
 			reason: 'Spam content',
 		},
 		json: true,
@@ -880,8 +966,8 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/messages/redact',
 		body: {
-			room_id: '!room:example.org',
-			event_id: '$target_message:example.org',
+			roomId: '!room:example.org',
+			targetEventId: '$target_message:example.org',
 		},
 		json: true,
 	});
@@ -909,7 +995,7 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/room/join',
 		body: {
-			room_id: '#alias:example.org',
+			roomId: '#alias:example.org',
 		},
 		json: true,
 	});
@@ -928,7 +1014,7 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/room/leave',
 		body: {
-			room_id: '#alias:example.org',
+			roomId: '#alias:example.org',
 			reason: 'Workflow completed successfully',
 		},
 		json: true,
@@ -948,7 +1034,7 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/room/leave',
 		body: {
-			room_id: '!roomid:example.org',
+			roomId: '!roomid:example.org',
 		},
 		json: true,
 	});
@@ -974,9 +1060,9 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 			name: 'Incident #402 - Auth Outage',
 			visibility: 'private',
 			topic: 'War room for production incident response',
-			room_alias_name: 'incident-402',
+			roomAliasName: 'incident-402',
 			invite: ['@alice:example.org', '@bob:example.org'],
-			is_encrypted: true,
+			isEncrypted: true,
 		},
 		json: true,
 	});
@@ -998,7 +1084,7 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		body: {
 			name: 'Public Announcements',
 			visibility: 'public',
-			is_encrypted: false,
+			isEncrypted: false,
 		},
 		json: true,
 	});
@@ -1018,8 +1104,8 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/room/invite',
 		body: {
-			room_id: '#alias:example.org',
-			user_ids: ['@alice:example.org', '@bob:example.org'],
+			roomId: '#alias:example.org',
+			userIds: ['@alice:example.org', '@bob:example.org'],
 			reason: 'Join the incident bridge',
 		},
 		json: true,
@@ -1040,8 +1126,8 @@ test('consolidated action node sends text, notice, image, audio, and typing requ
 		method: 'POST',
 		url: 'https://gateway.example.org/v1/room/invite',
 		body: {
-			room_id: '!roomid:example.org',
-			user_ids: ['@alice:example.org', '@charlie:example.org'],
+			roomId: '!roomid:example.org',
+			userIds: ['@alice:example.org', '@charlie:example.org'],
 		},
 		json: true,
 	});

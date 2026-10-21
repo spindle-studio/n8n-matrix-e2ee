@@ -13,14 +13,16 @@ use crate::{
 };
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct RedactEventRequest {
     room_id: String,
-    event_id: String,
+    target_event_id: String,
     #[serde(default)]
     reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RedactActionResponse {
     room_id: String,
     event_id: String,
@@ -36,7 +38,7 @@ pub(super) async fn redact_event(
 ) -> ApiResult<Json<RedactActionResponse>> {
     authorize_request(&state.api_secret_token, &headers)?;
     let (target_event_id, reason) =
-        validate_redact_request(&request.event_id, request.reason.as_deref())?;
+        validate_redact_request(&request.target_event_id, request.reason.as_deref())?;
 
     let room = resolve_known_room(&state.client, &request.room_id).await?;
     let room_id = room.room_id().to_owned();
@@ -73,11 +75,11 @@ fn validate_redact_request(
 ) -> ApiResult<(OwnedEventId, Option<String>)> {
     let trimmed_event_id = event_id.trim();
     if trimmed_event_id.is_empty() {
-        return Err(client_error("event_id must not be empty"));
+        return Err(client_error("targetEventId must not be empty"));
     }
     let parsed_event_id: OwnedEventId = trimmed_event_id
         .parse()
-        .map_err(|_| client_error("event_id must be a valid Matrix event ID"))?;
+        .map_err(|_| client_error("targetEventId must be a valid Matrix event ID"))?;
 
     let normalized_reason = reason
         .map(str::trim)
@@ -123,9 +125,9 @@ mod tests {
             })
             .unwrap(),
             serde_json::json!({
-                "room_id": "!room:example.org",
-                "event_id": "$redaction:example.org",
-                "target_event_id": "$target:example.org",
+                "roomId": "!room:example.org",
+                "eventId": "$redaction:example.org",
+                "targetEventId": "$target:example.org",
                 "reason": "Spam"
             })
         );
@@ -139,9 +141,9 @@ mod tests {
             })
             .unwrap(),
             serde_json::json!({
-                "room_id": "!room:example.org",
-                "event_id": "$redaction:example.org",
-                "target_event_id": "$target:example.org"
+                "roomId": "!room:example.org",
+                "eventId": "$redaction:example.org",
+                "targetEventId": "$target:example.org"
             })
         );
     }

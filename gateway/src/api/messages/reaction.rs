@@ -16,13 +16,15 @@ use crate::{
 };
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct SendReactionRequest {
     room_id: String,
-    event_id: String,
+    target_event_id: String,
     key: String,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ReactionActionResponse {
     room_id: String,
     event_id: String,
@@ -36,7 +38,7 @@ pub(super) async fn send_reaction(
     Json(request): Json<SendReactionRequest>,
 ) -> ApiResult<Json<ReactionActionResponse>> {
     authorize_request(&state.api_secret_token, &headers)?;
-    let (target_event_id, key) = validate_reaction_request(&request.event_id, &request.key)?;
+    let (target_event_id, key) = validate_reaction_request(&request.target_event_id, &request.key)?;
     let content = ReactionEventContent::new(Annotation::new(target_event_id.clone(), key.clone()));
 
     let room = resolve_known_room(&state.client, &request.room_id).await?;
@@ -67,11 +69,11 @@ pub(super) async fn send_reaction(
 fn validate_reaction_request(event_id: &str, key: &str) -> ApiResult<(OwnedEventId, String)> {
     let trimmed_event_id = event_id.trim();
     if trimmed_event_id.is_empty() {
-        return Err(client_error("event_id must not be empty"));
+        return Err(client_error("targetEventId must not be empty"));
     }
     let parsed_event_id: OwnedEventId = trimmed_event_id
         .parse()
-        .map_err(|_| client_error("event_id must be a valid Matrix event ID"))?;
+        .map_err(|_| client_error("targetEventId must be a valid Matrix event ID"))?;
 
     let trimmed_key = key.trim();
     if trimmed_key.is_empty() {

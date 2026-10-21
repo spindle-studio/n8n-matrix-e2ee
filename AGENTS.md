@@ -107,22 +107,22 @@ The API is intentionally private: expose it only to trusted n8n workloads.
 | --- | --- |
 | `GET /healthz` | Returns `200` after initialization |
 | `GET /v1/auth-check` | Returns `204` for a valid bearer token |
-| `POST /v1/messages/text` | Sends `{"room_id":"...","body":"...","mentions":{...},"relates_to":{...}}` as `m.text` (converts Markdown to plain-text `body` and HTML `formatted_body`; `mentions` and `relates_to` optional) |
-| `POST /v1/messages/notice` | Sends `{"room_id":"...","body":"...","mentions":{...},"relates_to":{...}}` as `m.notice` (converts Markdown to plain-text `body` and HTML `formatted_body` without triggering notifications; `mentions` and `relates_to` optional) |
-| `POST /v1/messages/emote` | Sends `{"room_id":"...","body":"...","mentions":{...},"relates_to":{...}}` as `m.emote` (converts Markdown to plain-text `body` and HTML `formatted_body`; `mentions` and `relates_to` optional) |
-| `POST /v1/messages/image` | Sends `multipart/form-data` with a JSON `metadata` part (`room_id`, optional `file_name`, optional `body`, optional `mentions`, optional `relates_to`) and a binary `media` image part |
-| `POST /v1/messages/audio` | Sends `multipart/form-data` with a JSON `metadata` part (`room_id`, optional `file_name`, optional `body`, optional `mentions`, optional `relates_to`) and a binary `media` Ogg/Opus part as a stable `m.audio` message |
-| `POST /v1/messages/reaction` | Sends `{"room_id":"...","event_id":"$...","key":"👍"}` as an `m.reaction` (`m.annotation`) event targeting `event_id` |
-| `POST /v1/messages/redact` | Sends `{"room_id":"...","event_id":"$...","reason":"..."}` as an `m.room.redaction` event redacting `event_id` (`reason` optional) |
-| `POST /v1/room/join` | Joins a room by room ID or alias (`{"room_id":"!room:example.org"}`) and returns `{"room_id":"!room:example.org"}` |
-| `POST /v1/room/invite` | Invites one or more users to a joined room by room ID or alias (`{"room_id":"!room:example.org","user_ids":["@user:example.org"],"reason":"..."}`, `reason` optional) and returns `{"room_id":"!room:example.org"}` |
-| `POST /v1/room/leave` | Leaves a joined or invited room by room ID or alias (`{"room_id":"!room:example.org","reason":"..."}`, `reason` optional) and returns `{"success":true}` |
-| `POST /v1/room/create` | Creates a room (`{"name":"...","visibility":"private"|"public","topic":"...","room_alias_name":"...","invite":["@user:example.org"],"is_encrypted":true}`) and returns `{"room_id":"!room:example.org"}` |
-| `POST /v1/typing` | Sets `{"room_id":"...","typing":true|false,"timeout_seconds":30}` (`timeout_seconds` optional when `typing: true`) |
-| `GET /v1/media` | Downloads supported media by room and event ID |
-| `GET /v1/ws` | Streams validated `room.message`, `reaction`, and `room.invite` events over WebSocket |
+| `POST /v1/messages/text` | Sends `{"roomId":"...","body":"...","mentions":{...},"relationType":"...","targetEventId":"$..."}` as `m.text` (converts Markdown to plain-text `body` and HTML `formatted_body`; `mentions`, `relationType`, and `targetEventId` optional) |
+| `POST /v1/messages/notice` | Sends `{"roomId":"...","body":"...","mentions":{...},"relationType":"...","targetEventId":"$..."}` as `m.notice` (converts Markdown to plain-text `body` and HTML `formatted_body` without triggering notifications; `mentions`, `relationType`, and `targetEventId` optional) |
+| `POST /v1/messages/emote` | Sends `{"roomId":"...","body":"...","mentions":{...},"relationType":"...","targetEventId":"$..."}` as `m.emote` (converts Markdown to plain-text `body` and HTML `formatted_body`; `mentions`, `relationType`, and `targetEventId` optional) |
+| `POST /v1/messages/image` | Sends `multipart/form-data` with a JSON `metadata` part (`roomId`, optional `fileName`, optional `body`, optional `mentions`, optional `relationType` and `targetEventId`) and a binary `media` image part |
+| `POST /v1/messages/audio` | Sends `multipart/form-data` with a JSON `metadata` part (`roomId`, optional `fileName`, optional `body`, optional `mentions`, optional `relationType` and `targetEventId`) and a binary `media` Ogg/Opus part as a stable `m.audio` message |
+| `POST /v1/messages/reaction` | Sends `{"roomId":"...","targetEventId":"$...","key":"👍"}` as an `m.reaction` (`m.annotation`) event targeting `targetEventId` |
+| `POST /v1/messages/redact` | Sends `{"roomId":"...","targetEventId":"$...","reason":"..."}` as an `m.room.redaction` event redacting `targetEventId` (`reason` optional) |
+| `POST /v1/room/join` | Joins a room by room ID or alias (`{"roomId":"!room:example.org"}`) and returns `{"roomId":"!room:example.org"}` |
+| `POST /v1/room/invite` | Invites one or more users to a joined room by room ID or alias (`{"roomId":"!room:example.org","userIds":["@user:example.org"],"reason":"..."}`, `reason` optional) and returns `{"roomId":"!room:example.org"}` |
+| `POST /v1/room/leave` | Leaves a joined or invited room by room ID or alias (`{"roomId":"!room:example.org","reason":"..."}`, `reason` optional) and returns `{"success":true}` |
+| `POST /v1/room/create` | Creates a room (`{"name":"...","visibility":"private"|"public","topic":"...","roomAliasName":"...","invite":["@user:example.org"],"isEncrypted":true}`) and returns `{"roomId":"!room:example.org"}` |
+| `POST /v1/typing` | Sets `{"roomId":"...","typing":true|false,"timeoutSeconds":30}` (`timeoutSeconds` optional when `typing: true`) |
+| `GET /v1/media` | Downloads supported media by `roomId` and `eventId` query parameters |
+| `GET /v1/ws` | Streams validated `message`, `reaction`, `invite`, `join`, and `leave` events over WebSocket |
 
-All routes that accept `room_id` accept either a Matrix room ID (`!room:example.org`) or a room alias (`#alias:example.org`).
+All routes that accept `roomId` accept either a Matrix room ID (`!room:example.org`) or a room alias (`#alias:example.org`).
 
 WebSocket clients must send `{"type":"authenticate","token":"<API_SECRET_TOKEN>"}`
 within five seconds. The gateway replies `{"type":"authenticated"}` before
@@ -133,18 +133,13 @@ WebSocket connections. Incoming frames/messages are limited to 4 KiB and at most
 response and authenticate again after reconnecting. Use WSS outside trusted
 networks; never log authentication payloads. HTTP authentication is unchanged.
 
-The WebSocket stream provides text, notice, emote, image, and audio events. All include
-`room_id`, `sender`, `event_id`, `body`, and `message_type`; text, notice, and emote events include
-`formatted_body` when Matrix supplies `org.matrix.custom.html` formatting, and
-media events can also include file, MIME, size, image-dimension, and duration
-metadata. When Matrix supplies `m.mentions`, events also include a `mentions`
-object:
+The WebSocket stream uses flattened `camelCase` JSON payloads with a top-level `eventType` (`"message"`, `"reaction"`, `"invite"`, `"join"`, or `"leave"`). Message events (`eventType: "message"`) provide text, notice, emote, image, and audio events with `roomId`, `sender`, `eventId`, `body`, and `messageType`; text, notice, and emote events include `formattedBody` when Matrix supplies `org.matrix.custom.html` formatting, and media events can also include `fileName`, `mimeType`, `sizeBytes`, `width`, `height`, and `durationSeconds` metadata. When Matrix supplies `m.mentions`, events also include a `mentions` object:
 
 ```json
-{"user_ids": ["@ben:example.org"], "room": false}
+{"userIds": ["@ben:example.org"], "room": false}
 ```
 
-`user_ids` contains the mentioned Matrix IDs (unique and sorted); `room` indicates
+`userIds` contains the mentioned Matrix IDs (unique and sorted); `room` indicates
 an `@room` mention. Both fields are present when `mentions` is present, defaulting
 to `[]` and `false`. Missing Matrix metadata omits `mentions` entirely, preserving
 the distinction from an explicitly empty mentions object. Text, notice, emote, image, and audio
@@ -152,23 +147,23 @@ messages use the same format. Mentions are never inferred from message text.
 This is sender-provided metadata, not proof of notification delivery or permission
 to notify the room. The n8n trigger preserves this optional object in its JSON output. Events from
 older gateways without `mentions` remain valid. When present, `mentions` must
-contain a string array `user_ids` and a boolean `room`; malformed metadata is
+contain a string array `userIds` and a boolean `room`; malformed metadata is
 rejected by the trigger like other invalid event fields.
 
 Outgoing text, notice, emote, image, and audio messages always attach Matrix 1.6+
 `m.mentions` metadata (defaulting to `{}` so homeservers and clients do not fall
 back to legacy text-matching push rules). Any message request may include an
-optional `mentions` object (`{"room": true|false, "user_ids": ["@user:example.org"]}`);
-`user_ids` entries are validated as Matrix user IDs, trimmed, deduplicated, and
+optional `mentions` object (`{"room": true|false, "userIds": ["@user:example.org"]}`);
+`userIds` entries are validated as Matrix user IDs, trimmed, deduplicated, and
 sorted.
 
-Message requests also support an optional `relates_to` object (`{"rel_type": "thread"|"reply"|"edit", "event_id": "$..."}`):
+Message requests also support optional flat `relationType` (`"thread"|"reply"|"edit"`) and `targetEventId` (`"$..."`) fields:
 
 - `thread` (supported for text, notice, emote, image, and audio) injects `m.relates_to` with `rel_type: "m.thread"`, `event_id`, and `m.in_reply_to: {"event_id": "$..."}` into the unencrypted event content before Megolm encryption.
 - `reply` (supported for text, notice, emote, image, and audio) injects `m.relates_to` with `m.in_reply_to: {"event_id": "$..."}`.
 - `edit` (supported for text, notice, and emote) constructs a Matrix `m.replace` event with `* `-prefixed top-level fallback `body`/`formatted_body`, clean replacement content in `m.new_content`, and `m.relates_to: {"rel_type": "m.replace", "event_id": "$..."}`.
 
-When incoming Matrix messages carry `m.thread`, `m.in_reply_to`, or `m.replace` relations, the WebSocket stream includes `relates_to: {"rel_type": "thread"|"reply"|"edit", "event_id": "$..."}` (using the clean `m.new_content` body, HTML formatting, and mentions for `m.replace` edits) and the n8n trigger validates and preserves `relates_to` in its JSON output. Incoming `m.reaction` events are streamed with `event_type: "reaction"`, `room_id`, `sender`, `event_id`, `key`, and `relates_to: {"rel_type": "annotation", "event_id": "$...", "key": "..."}`. Incoming room invitations for the gateway user are streamed with `event_type: "room.invite"`, `room_id`, and `sender` so workflows can accept (`POST /v1/room/join`) or reject (`POST /v1/room/leave`) them in n8n.
+When incoming Matrix messages carry `m.thread`, `m.in_reply_to`, or `m.replace` relations, the WebSocket stream includes top-level `relationType: "thread"|"reply"|"edit"` and `targetEventId: "$..."` (using the clean `m.new_content` body, HTML formatting, and mentions for `m.replace` edits) and the n8n trigger validates and preserves both fields in its JSON output. Incoming `m.reaction` events are streamed with `eventType: "reaction"`, `roomId`, `sender`, `eventId`, `targetEventId`, and `key`. Incoming room invitations for the gateway user are streamed with `eventType: "invite"`, `roomId`, `sender`, `userId`, and optional `reason` so workflows can accept (`POST /v1/room/join`) or reject (`POST /v1/room/leave`) them in n8n. Joined-room membership changes for non-self users are streamed with `eventType: "join"` (`roomId`, `sender`, `userId`, `eventId`) and `eventType: "leave"` (`roomId`, `sender`, `userId`, `eventId`, optional `reason`). The n8n trigger node provides three palette actions (`On Message`, `On Reaction`, and `On Room Event`) to filter events by category, with `On Message` ignoring message edits (`relationType: "edit"`) by default unless `Include Edits` is enabled.
 
 Outgoing audio includes MSC3245 compatibility metadata for a voice marker and
 waveform preview. Element X and compatible clients render it as a voice

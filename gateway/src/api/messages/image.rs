@@ -44,7 +44,10 @@ pub(super) async fn send_image(
 
     let content_type = validate_image_content_type(upload.content_type)?;
     let mentions = resolve_mentions(upload.metadata.mentions)?;
-    let relates_to = resolve_media_relates_to(upload.metadata.relates_to)?;
+    let relates_to = resolve_media_relates_to(
+        upload.metadata.relation_type,
+        upload.metadata.target_event_id.as_deref(),
+    )?;
     let room = resolve_known_room(&state.client, &upload.metadata.room_id).await?;
     let room_id = room.room_id().to_owned();
     let file_name = resolved_file_name(

@@ -15,60 +15,73 @@ const AUTH_TIMEOUT_MS = 10_000;
 
 type MatrixE2eeMessageType = 'text' | 'notice' | 'emote' | 'image' | 'audio';
 type MatrixE2eeRelationshipType = 'thread' | 'reply' | 'edit';
+type MatrixE2eeTriggerEventMode = 'message' | 'reaction' | 'room';
+type MatrixE2eeRoomEventType = 'invite' | 'join' | 'leave';
 
 interface MatrixE2eeMentions extends IDataObject {
-	user_ids: string[];
+	userIds: string[];
 	room: boolean;
 }
 
-interface MatrixE2eeRelatesTo extends IDataObject {
-	rel_type: MatrixE2eeRelationshipType;
-	event_id: string;
-}
-
-interface MatrixE2eeReactionRelatesTo extends IDataObject {
-	rel_type: 'annotation';
-	event_id: string;
-	key: string;
-}
-
 interface MatrixE2eeMessageEvent extends IDataObject {
-	event_type: 'room.message';
-	room_id: string;
+	eventType: 'message';
+	roomId: string;
 	sender: string;
-	event_id: string;
+	eventId: string;
 	body: string;
-	formatted_body?: string;
-	message_type: MatrixE2eeMessageType;
+	formattedBody?: string;
+	messageType: MatrixE2eeMessageType;
 	mentions?: MatrixE2eeMentions;
-	relates_to?: MatrixE2eeRelatesTo;
-	file_name?: string;
-	mime_type?: string;
-	size_bytes?: number;
+	relationType?: MatrixE2eeRelationshipType;
+	targetEventId?: string;
+	fileName?: string;
+	mimeType?: string;
+	sizeBytes?: number;
 	width?: number;
 	height?: number;
-	duration_seconds?: number;
+	durationSeconds?: number;
 }
 
 interface MatrixE2eeReactionEvent extends IDataObject {
-	event_type: 'reaction';
-	room_id: string;
+	eventType: 'reaction';
+	roomId: string;
 	sender: string;
-	event_id: string;
+	eventId: string;
+	targetEventId: string;
 	key: string;
-	relates_to: MatrixE2eeReactionRelatesTo;
 }
 
 interface MatrixE2eeInviteEvent extends IDataObject {
-	event_type: 'room.invite';
-	room_id: string;
+	eventType: 'invite';
+	roomId: string;
 	sender: string;
+	userId: string;
+	reason?: string;
+}
+
+interface MatrixE2eeJoinEvent extends IDataObject {
+	eventType: 'join';
+	roomId: string;
+	sender: string;
+	userId: string;
+	eventId: string;
+}
+
+interface MatrixE2eeLeaveEvent extends IDataObject {
+	eventType: 'leave';
+	roomId: string;
+	sender: string;
+	userId: string;
+	eventId: string;
+	reason?: string;
 }
 
 type MatrixE2eeEvent =
 	| MatrixE2eeMessageEvent
 	| MatrixE2eeReactionEvent
-	| MatrixE2eeInviteEvent;
+	| MatrixE2eeInviteEvent
+	| MatrixE2eeJoinEvent
+	| MatrixE2eeLeaveEvent;
 
 export function getGatewayWebSocketUrl(baseUrl: string): string {
 	const parsedUrl = new URL(baseUrl.trim());
@@ -112,8 +125,8 @@ function isMentions(value: unknown): value is MatrixE2eeMentions {
 	}
 	const mentions = value as Record<string, unknown>;
 	return (
-		Array.isArray(mentions.user_ids) &&
-		mentions.user_ids.every(isNonEmptyString) &&
+		Array.isArray(mentions.userIds) &&
+		mentions.userIds.every(isNonEmptyString) &&
 		typeof mentions.room === 'boolean'
 	);
 }
@@ -127,29 +140,8 @@ function isValidEventId(value: unknown): value is string {
 	);
 }
 
-function isRelatesTo(value: unknown): value is MatrixE2eeRelatesTo {
-	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-		return false;
-	}
-	const relatesTo = value as Record<string, unknown>;
-	return (
-		(relatesTo.rel_type === 'thread' ||
-			relatesTo.rel_type === 'reply' ||
-			relatesTo.rel_type === 'edit') &&
-		isValidEventId(relatesTo.event_id)
-	);
-}
-
-function isReactionRelatesTo(value: unknown): value is MatrixE2eeReactionRelatesTo {
-	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-		return false;
-	}
-	const relatesTo = value as Record<string, unknown>;
-	return (
-		relatesTo.rel_type === 'annotation' &&
-		isValidEventId(relatesTo.event_id) &&
-		isNonEmptyString(relatesTo.key)
-	);
+function isRelationshipType(value: unknown): value is MatrixE2eeRelationshipType {
+	return value === 'thread' || value === 'reply' || value === 'edit';
 }
 
 function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined {
@@ -159,49 +151,88 @@ function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined
 
 	const event = payload as Record<string, unknown>;
 
-	if (event.event_type === 'room.invite') {
-		if (!['room_id', 'sender'].every((field) => isNonEmptyString(event[field]))) {
+	if (event.eventType === 'invite') {
+		if (
+			!['roomId', 'sender', 'userId'].every((field) => isNonEmptyString(event[field])) ||
+			!isOptionalString(event.reason)
+		) {
 			return undefined;
 		}
+		const reason = event.reason?.trim() || undefined;
 
 		return {
-			event_type: 'room.invite',
-			room_id: event.room_id as string,
+			eventType: 'invite',
+			roomId: event.roomId as string,
 			sender: event.sender as string,
+			userId: event.userId as string,
+			...(reason === undefined ? {} : { reason }),
 		};
 	}
 
-	if (event.event_type === 'reaction') {
+	if (event.eventType === 'join') {
 		if (
-			!['room_id', 'sender', 'event_id', 'key'].every((field) => isNonEmptyString(event[field])) ||
-			!isReactionRelatesTo(event.relates_to) ||
-			event.relates_to.key !== event.key
+			!['roomId', 'sender', 'userId'].every((field) => isNonEmptyString(event[field])) ||
+			!isValidEventId(event.eventId)
 		) {
 			return undefined;
 		}
 
 		return {
-			event_type: 'reaction',
-			room_id: event.room_id as string,
+			eventType: 'join',
+			roomId: event.roomId as string,
 			sender: event.sender as string,
-			event_id: event.event_id as string,
+			userId: event.userId as string,
+			eventId: event.eventId,
+		};
+	}
+
+	if (event.eventType === 'leave') {
+		if (
+			!['roomId', 'sender', 'userId'].every((field) => isNonEmptyString(event[field])) ||
+			!isValidEventId(event.eventId) ||
+			!isOptionalString(event.reason)
+		) {
+			return undefined;
+		}
+		const reason = event.reason?.trim() || undefined;
+
+		return {
+			eventType: 'leave',
+			roomId: event.roomId as string,
+			sender: event.sender as string,
+			userId: event.userId as string,
+			eventId: event.eventId,
+			...(reason === undefined ? {} : { reason }),
+		};
+	}
+
+	if (event.eventType === 'reaction') {
+		if (
+			!['roomId', 'sender', 'key'].every((field) => isNonEmptyString(event[field])) ||
+			!isValidEventId(event.eventId) ||
+			!isValidEventId(event.targetEventId)
+		) {
+			return undefined;
+		}
+
+		return {
+			eventType: 'reaction',
+			roomId: event.roomId as string,
+			sender: event.sender as string,
+			eventId: event.eventId,
+			targetEventId: event.targetEventId,
 			key: event.key as string,
-			relates_to: {
-				rel_type: 'annotation',
-				event_id: event.relates_to.event_id,
-				key: event.relates_to.key,
-			},
 		};
 	}
 
 	if (
-		event.event_type !== 'room.message' ||
-		!['room_id', 'sender', 'event_id', 'body'].every((field) => isNonEmptyString(event[field]))
+		event.eventType !== 'message' ||
+		!['roomId', 'sender', 'eventId', 'body'].every((field) => isNonEmptyString(event[field]))
 	) {
 		return undefined;
 	}
 
-	const messageType = event.message_type;
+	const messageType = event.messageType;
 	if (
 		messageType !== undefined &&
 		messageType !== 'text' &&
@@ -224,19 +255,19 @@ function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined
 		normalizedMessageType === 'notice' ||
 		normalizedMessageType === 'emote'
 	) {
-		if (!isOptionalString(event.formatted_body)) {
+		if (!isOptionalString(event.formattedBody)) {
 			return undefined;
 		}
-	} else if (event.formatted_body !== undefined) {
+	} else if (event.formattedBody !== undefined) {
 		return undefined;
 	}
 	if (
-		!isOptionalString(event.file_name) ||
-		!isOptionalString(event.mime_type) ||
-		!isOptionalNonNegativeNumber(event.size_bytes) ||
+		!isOptionalString(event.fileName) ||
+		!isOptionalString(event.mimeType) ||
+		!isOptionalNonNegativeNumber(event.sizeBytes) ||
 		!isOptionalNonNegativeNumber(event.width) ||
 		!isOptionalNonNegativeNumber(event.height) ||
-		!isOptionalNonNegativeNumber(event.duration_seconds)
+		!isOptionalNonNegativeNumber(event.durationSeconds)
 	) {
 		return undefined;
 	}
@@ -246,44 +277,74 @@ function normalizeMatrixE2eeEvent(payload: unknown): MatrixE2eeEvent | undefined
 	}
 	const mentions = event.mentions;
 
-	if (event.relates_to !== undefined && !isRelatesTo(event.relates_to)) {
+	const hasRelationType = event.relationType !== undefined;
+	const hasTargetEventId = event.targetEventId !== undefined;
+	if (hasRelationType !== hasTargetEventId) {
 		return undefined;
 	}
-	const relatesTo = event.relates_to;
+	if (
+		hasRelationType &&
+		(!isRelationshipType(event.relationType) || !isValidEventId(event.targetEventId))
+	) {
+		return undefined;
+	}
+	const relationType = event.relationType as MatrixE2eeRelationshipType | undefined;
+	const targetEventId = event.targetEventId as string | undefined;
 
-	const roomId = event.room_id as string;
+	const roomId = event.roomId as string;
 	const sender = event.sender as string;
-	const eventId = event.event_id as string;
+	const eventId = event.eventId as string;
 	const body = event.body as string;
-	const formattedBody = event.formatted_body as string | undefined;
-	const fileName = event.file_name as string | undefined;
-	const mimeType = event.mime_type as string | undefined;
-	const sizeBytes = event.size_bytes as number | undefined;
+	const formattedBody = event.formattedBody as string | undefined;
+	const fileName = event.fileName as string | undefined;
+	const mimeType = event.mimeType as string | undefined;
+	const sizeBytes = event.sizeBytes as number | undefined;
 	const width = event.width as number | undefined;
 	const height = event.height as number | undefined;
-	const durationSeconds = event.duration_seconds as number | undefined;
+	const durationSeconds = event.durationSeconds as number | undefined;
 
 	return {
-		event_type: 'room.message',
-		room_id: roomId,
+		eventType: 'message',
+		roomId,
 		sender,
-		event_id: eventId,
+		eventId,
 		body,
-		...(formattedBody === undefined ? {} : { formatted_body: formattedBody }),
-		message_type: normalizedMessageType,
+		...(formattedBody === undefined ? {} : { formattedBody }),
+		messageType: normalizedMessageType,
 		...(mentions === undefined
 			? {}
-			: { mentions: { user_ids: [...mentions.user_ids], room: mentions.room } }),
-		...(relatesTo === undefined
+			: { mentions: { userIds: [...mentions.userIds], room: mentions.room } }),
+		...(relationType === undefined || targetEventId === undefined
 			? {}
-			: { relates_to: { rel_type: relatesTo.rel_type, event_id: relatesTo.event_id } }),
-		file_name: fileName,
-		mime_type: mimeType,
-		size_bytes: sizeBytes,
+			: { relationType, targetEventId }),
+		fileName,
+		mimeType,
+		sizeBytes,
 		width,
 		height,
-		duration_seconds: durationSeconds,
+		durationSeconds,
 	};
+}
+
+function shouldEmitEvent(
+	event: MatrixE2eeEvent,
+	triggerEventMode: MatrixE2eeTriggerEventMode,
+	includeEdits: boolean,
+	allowedRoomEvents: Set<MatrixE2eeRoomEventType>,
+): boolean {
+	switch (triggerEventMode) {
+		case 'message':
+			return event.eventType === 'message' && (includeEdits || event.relationType !== 'edit');
+		case 'reaction':
+			return event.eventType === 'reaction';
+		case 'room':
+			return (
+				(event.eventType === 'invite' ||
+					event.eventType === 'join' ||
+					event.eventType === 'leave') &&
+				allowedRoomEvents.has(event.eventType)
+			);
+	}
 }
 
 export function isMatrixE2eeEvent(payload: unknown): payload is IDataObject {
@@ -319,8 +380,8 @@ async function downloadGatewayMedia(
 			Authorization: `Bearer ${apiToken}`,
 		},
 		qs: {
-			room_id: event.room_id,
-			event_id: event.event_id,
+			roomId: event.roomId,
+			eventId: event.eventId,
 		},
 		encoding: 'arraybuffer',
 	});
@@ -333,8 +394,8 @@ async function downloadGatewayMedia(
 		);
 	}
 
-	const fileName = event.file_name?.trim() || 'media';
-	const mimeType = event.mime_type?.trim() || undefined;
+	const fileName = event.fileName?.trim() || 'media';
+	const mimeType = event.mimeType?.trim() || undefined;
 
 	return this.helpers.prepareBinaryData(buffer, fileName, mimeType);
 }
@@ -352,8 +413,8 @@ async function buildExecutionData(
 	};
 
 	if (
-		event.event_type === 'room.message' &&
-		(event.message_type === 'image' || event.message_type === 'audio') &&
+		event.eventType === 'message' &&
+		(event.messageType === 'image' || event.messageType === 'audio') &&
 		downloadMedia
 	) {
 		item.binary = {
@@ -374,7 +435,8 @@ export class MatrixE2eeTrigger implements INodeType {
 		},
 		group: ['trigger'],
 		version: [1],
-		subtitle: 'New message',
+		subtitle:
+			'={{$parameter["event"] === "reaction" ? "On Reaction" : $parameter["event"] === "room" ? "On Room Event" : "On Message"}}',
 		description: 'Send and receive encrypted Matrix messages',
 		defaults: {
 			name: 'Matrix E2EE Trigger',
@@ -389,10 +451,85 @@ export class MatrixE2eeTrigger implements INodeType {
 		],
 		properties: [
 			{
+				displayName: 'Event',
+				name: 'event',
+				type: 'options',
+				noDataExpression: true,
+				options: [
+					{
+						name: 'On Message',
+						value: 'message',
+						action: 'On message',
+						description: 'Trigger when a new encrypted message is received',
+					},
+					{
+						name: 'On Reaction',
+						value: 'reaction',
+						action: 'On reaction',
+						description: 'Trigger when a reaction is added to a message',
+					},
+					{
+						name: 'On Room Event',
+						value: 'room',
+						action: 'On room event',
+						description:
+							'Trigger when a room invitation is received or a user joins or leaves a room',
+					},
+				],
+				default: 'message',
+				description: 'The Matrix event category that triggers the workflow',
+			},
+			{
+				displayName: 'Room Events',
+				name: 'roomEvents',
+				type: 'multiOptions',
+				displayOptions: {
+					show: {
+						event: ['room'],
+					},
+				},
+				options: [
+					{
+						name: 'Invite',
+						value: 'invite',
+						description: 'Trigger when a room invitation is received',
+					},
+					{
+						name: 'Join',
+						value: 'join',
+						description: 'Trigger when a user joins a room',
+					},
+					{
+						name: 'Leave',
+						value: 'leave',
+						description: 'Trigger when a user leaves or is removed from a room',
+					},
+				],
+				default: ['invite', 'join', 'leave'],
+				description: 'Which room membership events should trigger the workflow',
+			},
+			{
+				displayName: 'Include Edits',
+				name: 'includeEdits',
+				type: 'boolean',
+				default: false,
+				displayOptions: {
+					show: {
+						event: ['message'],
+					},
+				},
+				description: 'Whether to also trigger when an existing message is edited',
+			},
+			{
 				displayName: 'Download Media',
 				name: 'downloadMedia',
 				type: 'boolean',
 				default: true,
+				displayOptions: {
+					show: {
+						event: ['message'],
+					},
+				},
 				description:
 					'Whether to download image or audio message content and attach it as binary data to the output item',
 			},
@@ -403,6 +540,7 @@ export class MatrixE2eeTrigger implements INodeType {
 				default: 'data',
 				displayOptions: {
 					show: {
+						event: ['message'],
 						downloadMedia: [true],
 					},
 				},
@@ -415,8 +553,33 @@ export class MatrixE2eeTrigger implements INodeType {
 		const credentials = await this.getCredentials('matrixE2eeApi');
 		const baseUrl = credentials.baseUrl;
 		const apiToken = credentials.apiToken;
-		const downloadMedia = this.getNodeParameter('downloadMedia') as boolean;
-		const binaryPropertyName = this.getNodeParameter('binaryPropertyName') as string;
+		const rawEventMode = this.getNodeParameter('event', 'message') as unknown;
+		const triggerEventMode: MatrixE2eeTriggerEventMode =
+			rawEventMode === 'reaction' || rawEventMode === 'room' ? rawEventMode : 'message';
+		const includeEdits =
+			triggerEventMode === 'message'
+				? Boolean(this.getNodeParameter('includeEdits', false))
+				: false;
+		const rawRoomEvents =
+			triggerEventMode === 'room'
+				? (this.getNodeParameter('roomEvents', ['invite', 'join', 'leave']) as unknown)
+				: ['invite', 'join', 'leave'];
+		const allowedRoomEvents = new Set<MatrixE2eeRoomEventType>(
+			Array.isArray(rawRoomEvents)
+				? rawRoomEvents.filter(
+						(entry): entry is MatrixE2eeRoomEventType =>
+							entry === 'invite' || entry === 'join' || entry === 'leave',
+					)
+				: ['invite', 'join', 'leave'],
+		);
+		const downloadMedia =
+			triggerEventMode === 'message'
+				? Boolean(this.getNodeParameter('downloadMedia', true))
+				: false;
+		const binaryPropertyName =
+			triggerEventMode === 'message'
+				? String(this.getNodeParameter('binaryPropertyName', 'data'))
+				: 'data';
 
 		if (typeof baseUrl !== 'string' || baseUrl.trim().length === 0) {
 			throw new NodeOperationError(
@@ -554,7 +717,10 @@ export class MatrixE2eeTrigger implements INodeType {
 					}
 					const event = normalizeMatrixE2eeEvent(payload);
 
-					if (event === undefined) {
+					if (
+						event === undefined ||
+						!shouldEmitEvent(event, triggerEventMode, includeEdits, allowedRoomEvents)
+					) {
 						return;
 					}
 

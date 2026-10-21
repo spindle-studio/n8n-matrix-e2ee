@@ -18,6 +18,7 @@ use super::{
 const DEFAULT_TYPING_TIMEOUT_SECONDS: u64 = 30;
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct TypingRequest {
     room_id: String,
     typing: bool,
@@ -25,6 +26,7 @@ pub(super) struct TypingRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct RoomTypingResponse {
     room_id: String,
     typing: bool,
@@ -39,7 +41,7 @@ fn resolve_typing_state(typing: bool, timeout_seconds: Option<u64>) -> ApiResult
 
     let seconds = timeout_seconds.unwrap_or(DEFAULT_TYPING_TIMEOUT_SECONDS);
     if seconds == 0 {
-        return Err(client_error("timeout_seconds must be greater than 0"));
+        return Err(client_error("timeoutSeconds must be greater than 0"));
     }
 
     Ok((
@@ -95,7 +97,7 @@ mod tests {
                 timeout_seconds: Some(30),
             })
             .unwrap(),
-            serde_json::json!({"room_id": "!room:example.org", "typing": true, "timeout_seconds": 30})
+            serde_json::json!({"roomId": "!room:example.org", "typing": true, "timeoutSeconds": 30})
         );
         assert_eq!(
             serde_json::to_value(RoomTypingResponse {
@@ -104,7 +106,7 @@ mod tests {
                 timeout_seconds: None,
             })
             .unwrap(),
-            serde_json::json!({"room_id": "!room:example.org", "typing": false})
+            serde_json::json!({"roomId": "!room:example.org", "typing": false})
         );
     }
 

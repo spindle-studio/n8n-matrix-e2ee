@@ -249,10 +249,10 @@ function resolveValidatedEventId(
 	return trimmed;
 }
 
-function resolveOutgoingRelatesTo(
+function resolveOutgoingRelation(
 	this: IExecuteFunctions,
 	itemIndex: number,
-): IDataObject | undefined {
+): { relationType: 'thread' | 'reply'; targetEventId: string } | undefined {
 	const relationshipType = this.getNodeParameter('relationshipType', itemIndex, 'none') as unknown;
 	if (typeof relationshipType !== 'string') {
 		throw new NodeOperationError(
@@ -273,8 +273,8 @@ function resolveOutgoingRelatesTo(
 				itemIndex,
 			);
 			return {
-				rel_type: 'thread',
-				event_id: eventId,
+				relationType: 'thread',
+				targetEventId: eventId,
 			};
 		}
 		case 'reply': {
@@ -285,8 +285,8 @@ function resolveOutgoingRelatesTo(
 				itemIndex,
 			);
 			return {
-				rel_type: 'reply',
-				event_id: eventId,
+				relationType: 'reply',
+				targetEventId: eventId,
 			};
 		}
 		default:
@@ -376,7 +376,7 @@ function resolveOutgoingMentions(
 	}
 
 	return {
-		user_ids: userIds,
+		userIds,
 		room,
 	};
 }
@@ -995,7 +995,7 @@ export class MatrixE2ee implements INodeType {
 									method: 'POST',
 									url: getGatewayJoinRoomUrl(baseUrl),
 									body: {
-										room_id: rawRoomId.trim(),
+										roomId: rawRoomId.trim(),
 									},
 									json: true,
 								},
@@ -1043,8 +1043,8 @@ export class MatrixE2ee implements INodeType {
 									method: 'POST',
 									url: getGatewayInviteRoomUrl(baseUrl),
 									body: {
-										room_id: rawRoomId.trim(),
-										user_ids: userIds,
+										roomId: rawRoomId.trim(),
+										userIds,
 										...(reason === undefined ? {} : { reason }),
 									},
 									json: true,
@@ -1080,7 +1080,7 @@ export class MatrixE2ee implements INodeType {
 									method: 'POST',
 									url: getGatewayLeaveRoomUrl(baseUrl),
 									body: {
-										room_id: rawRoomId.trim(),
+										roomId: rawRoomId.trim(),
 										...(reason === undefined ? {} : { reason }),
 									},
 									json: true,
@@ -1150,9 +1150,9 @@ export class MatrixE2ee implements INodeType {
 										name: rawName.trim(),
 										visibility,
 										...(topic === undefined ? {} : { topic }),
-										...(roomAliasName === undefined ? {} : { room_alias_name: roomAliasName }),
+										...(roomAliasName === undefined ? {} : { roomAliasName }),
 										...(invite.length === 0 ? {} : { invite }),
-										is_encrypted: isEncrypted,
+										isEncrypted,
 									},
 									json: true,
 								},
@@ -1195,7 +1195,7 @@ export class MatrixE2ee implements INodeType {
 							{},
 						) as IDataObject | undefined;
 						const mentions = resolveOutgoingMentions.call(this, additionalFields, itemIndex);
-						const relatesTo = resolveOutgoingRelatesTo.call(this, itemIndex);
+						const relation = resolveOutgoingRelation.call(this, itemIndex);
 
 						switch (messageType) {
 							case 'text':
@@ -1210,10 +1210,10 @@ export class MatrixE2ee implements INodeType {
 								}
 
 								const requestBody: IDataObject = {
-									room_id: roomId,
+									roomId,
 									body: message,
 									...(mentions === undefined ? {} : { mentions }),
-									...(relatesTo === undefined ? {} : { relates_to: relatesTo }),
+									...(relation === undefined ? {} : relation),
 								};
 
 								responseData = await this.helpers.httpRequestWithAuthentication.call(
@@ -1253,8 +1253,8 @@ export class MatrixE2ee implements INodeType {
 
 								const fileName = resolveImageFileName(binaryData, mimeType);
 								const metadata: IDataObject = {
-									room_id: roomId,
-									file_name: fileName,
+									roomId,
+									fileName,
 								};
 								const trimmedCaption = trimmedOrUndefined(caption);
 
@@ -1264,8 +1264,9 @@ export class MatrixE2ee implements INodeType {
 								if (mentions !== undefined) {
 									metadata.mentions = mentions;
 								}
-								if (relatesTo !== undefined) {
-									metadata.relates_to = relatesTo;
+								if (relation !== undefined) {
+									metadata.relationType = relation.relationType;
+									metadata.targetEventId = relation.targetEventId;
 								}
 
 								responseData = await this.helpers.httpRequestWithAuthentication.call(
@@ -1306,8 +1307,8 @@ export class MatrixE2ee implements INodeType {
 								const fileName =
 									trimmedOrUndefined(binaryData.fileName ?? '') ?? 'audio-message.ogg';
 								const metadata: IDataObject = {
-									room_id: roomId,
-									file_name: fileName,
+									roomId,
+									fileName,
 								};
 								const trimmedCaption = trimmedOrUndefined(caption);
 
@@ -1317,8 +1318,9 @@ export class MatrixE2ee implements INodeType {
 								if (mentions !== undefined) {
 									metadata.mentions = mentions;
 								}
-								if (relatesTo !== undefined) {
-									metadata.relates_to = relatesTo;
+								if (relation !== undefined) {
+									metadata.relationType = relation.relationType;
+									metadata.targetEventId = relation.targetEventId;
 								}
 								responseData = await this.helpers.httpRequestWithAuthentication.call(
 									this,
@@ -1377,13 +1379,11 @@ export class MatrixE2ee implements INodeType {
 						const mentions = resolveOutgoingMentions.call(this, additionalFields, itemIndex);
 
 						const requestBody: IDataObject = {
-							room_id: roomId,
+							roomId,
 							body: message,
 							...(mentions === undefined ? {} : { mentions }),
-							relates_to: {
-								rel_type: 'edit',
-								event_id: targetEventId,
-							},
+							relationType: 'edit',
+							targetEventId,
 						};
 
 						responseData = await this.helpers.httpRequestWithAuthentication.call(
@@ -1438,8 +1438,8 @@ export class MatrixE2ee implements INodeType {
 								method: 'POST',
 								url: getGatewaySendReactionUrl(baseUrl),
 								body: {
-									room_id: roomId,
-									event_id: targetEventId,
+									roomId,
+									targetEventId,
 									key,
 								},
 								json: true,
@@ -1475,8 +1475,8 @@ export class MatrixE2ee implements INodeType {
 								method: 'POST',
 								url: getGatewayRedactUrl(baseUrl),
 								body: {
-									room_id: roomId,
-									event_id: targetEventId,
+									roomId,
+									targetEventId,
 									...(reason === undefined ? {} : { reason }),
 								},
 								json: true,
@@ -1488,7 +1488,7 @@ export class MatrixE2ee implements INodeType {
 						const typingState = this.getNodeParameter('typingState', itemIndex) as string;
 						const typing = typingState === 'start';
 						const requestBody: IDataObject = {
-							room_id: roomId,
+							roomId,
 							typing,
 						};
 
@@ -1505,7 +1505,7 @@ export class MatrixE2ee implements INodeType {
 									{ itemIndex },
 								);
 							}
-							requestBody.timeout_seconds = Math.round(timeoutSeconds);
+							requestBody.timeoutSeconds = Math.round(timeoutSeconds);
 						}
 
 						responseData = await this.helpers.httpRequestWithAuthentication.call(

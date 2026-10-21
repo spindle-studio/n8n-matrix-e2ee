@@ -6,7 +6,7 @@ use matrix_sdk::{
         events::{
             reaction::OriginalSyncReactionEvent,
             room::{
-                member::{MembershipState, StrippedRoomMemberEvent},
+                member::{OriginalSyncRoomMemberEvent, StrippedRoomMemberEvent},
                 message::OriginalSyncRoomMessageEvent,
             },
         },
@@ -17,7 +17,8 @@ use tracing::{error, info, warn};
 
 use crate::api::{
     GatewayEvent, gateway_message_type_label, reaction_content_to_gateway_event,
-    room_message_content_to_gateway_event,
+    room_member_event_to_gateway_event, room_message_content_to_gateway_event,
+    stripped_room_invite_to_gateway_event,
 };
 
 pub(crate) async fn run_sync_loop(client: Client) {
@@ -131,8 +132,8 @@ pub(crate) fn register_event_handlers(
         }
     });
 
-    let invite_events = events;
-    let invite_own_user_id = own_user_id;
+    let invite_events = events.clone();
+    let invite_own_user_id = own_user_id.clone();
     client.add_event_handler(move |event: StrippedRoomMemberEvent, room: Room| {
         let events = invite_events.clone();
         let own_user_id = invite_own_user_id.clone();
@@ -143,12 +144,14 @@ pub(crate) fn register_event_handlers(
             if room.state() != RoomState::Invited {
                 return;
             }
-            if event.content.membership != MembershipState::Invite {
-                return;
-            }
             if is_self_authored_message(&event.sender, own_user_id.as_ref()) {
                 return;
             }
+            let Some(gateway_event) =
+                stripped_room_invite_to_gateway_event(room.room_id().as_str(), &event)
+            else {
+                return;
+            };
 
             info!(
                 inviter = %event.sender,
@@ -156,13 +159,40 @@ pub(crate) fn register_event_handlers(
                 "received Matrix room invite for the gateway user"
             );
 
-            broadcast_event(
-                &events,
-                GatewayEvent::Invite {
-                    room_id: room.room_id().to_string(),
-                    sender: event.sender.to_string(),
-                },
+            broadcast_event(&events, gateway_event);
+        }
+    });
+
+    let member_events = events;
+    let member_own_user_id = own_user_id;
+    client.add_event_handler(move |event: OriginalSyncRoomMemberEvent, room: Room| {
+        let events = member_events.clone();
+        let own_user_id = member_own_user_id.clone();
+        async move {
+            if room.state() != RoomState::Joined {
+                return;
+            }
+            if is_self_authored_message(&event.sender, own_user_id.as_ref())
+                || event.state_key == own_user_id
+            {
+                return;
+            }
+            let Some(gateway_event) =
+                room_member_event_to_gateway_event(room.room_id().as_str(), &event)
+            else {
+                return;
+            };
+
+            info!(
+                room_id = %room.room_id(),
+                sender = %event.sender,
+                user_id = %event.state_key,
+                event_id = %event.event_id,
+                membership = %event.content.membership,
+                "received Matrix room member event"
             );
+
+            broadcast_event(&events, gateway_event);
         }
     });
 }
