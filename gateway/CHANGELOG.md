@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/spindle-studio/n8n-matrix-e2ee/compare/gateway-v0.4.0...gateway-v0.5.0) (2026-10-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **gateway:** support multiple Matrix accounts via TOML config ([#27](https://github.com/spindle-studio/n8n-matrix-e2ee/issues/27))
+
+### Features
+
+* **gateway:** cache uploaded images per room in SQLite ([#25](https://github.com/spindle-studio/n8n-matrix-e2ee/issues/25)) ([8eebe80](https://github.com/spindle-studio/n8n-matrix-e2ee/commit/8eebe808dca01b290a1148ca95d57d00f7016c2c))
+* **gateway:** support multiple Matrix accounts via TOML config ([#27](https://github.com/spindle-studio/n8n-matrix-e2ee/issues/27)) ([1deaebd](https://github.com/spindle-studio/n8n-matrix-e2ee/commit/1deaebd6904067766a0ed9c53c68efb04eb3afb2))
+
 ## [0.4.0](https://github.com/spindle-studio/n8n-matrix-e2ee/compare/gateway-v0.3.0...gateway-v0.4.0) (2026-10-21)
 
 
