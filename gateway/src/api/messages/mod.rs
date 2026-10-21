@@ -172,22 +172,26 @@ pub(super) fn into_raw_room_message_content(
         .map_err(|_| server_error("failed to serialize Matrix message content"))
 }
 
-pub(super) async fn upload_room_media(
-    client: &matrix_sdk::Client,
-    room: &Room,
-    content_type: &Mime,
-    data: Vec<u8>,
-    upload_error_message: &'static str,
-) -> ApiResult<MediaSource> {
-    if room
+pub(super) async fn is_room_encrypted(room: &Room) -> ApiResult<bool> {
+    Ok(room
         .latest_encryption_state()
         .await
         .map_err(|error| {
             error!(%error, room_id = %room.room_id(), "failed to inspect Matrix room encryption state");
             server_error("failed to inspect Matrix room encryption state")
         })?
-        .is_encrypted()
-    {
+        .is_encrypted())
+}
+
+pub(super) async fn upload_room_media_with_encryption(
+    client: &matrix_sdk::Client,
+    room: &Room,
+    is_encrypted: bool,
+    content_type: &Mime,
+    data: Vec<u8>,
+    upload_error_message: &'static str,
+) -> ApiResult<MediaSource> {
+    if is_encrypted {
         let mut reader = Cursor::new(data);
         let encrypted = client.upload_encrypted_file(&mut reader).await.map_err(|error| {
             error!(%error, room_id = %room.room_id(), "failed to upload encrypted Matrix media");
@@ -201,6 +205,25 @@ pub(super) async fn upload_room_media(
         })?;
         Ok(MediaSource::Plain(upload.content_uri))
     }
+}
+
+pub(super) async fn upload_room_media(
+    client: &matrix_sdk::Client,
+    room: &Room,
+    content_type: &Mime,
+    data: Vec<u8>,
+    upload_error_message: &'static str,
+) -> ApiResult<MediaSource> {
+    let is_encrypted = is_room_encrypted(room).await?;
+    upload_room_media_with_encryption(
+        client,
+        room,
+        is_encrypted,
+        content_type,
+        data,
+        upload_error_message,
+    )
+    .await
 }
 
 #[derive(Debug, Default, Deserialize)]

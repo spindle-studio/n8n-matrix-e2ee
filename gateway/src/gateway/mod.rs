@@ -1,4 +1,5 @@
 pub(crate) mod device;
+pub(crate) mod media_cache;
 pub(crate) mod session;
 pub(crate) mod sync;
 
@@ -8,17 +9,22 @@ use tracing::info;
 
 use crate::{api::GatewayEvent, config::Config};
 
+use self::media_cache::MediaCache;
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) client: Client,
     pub(crate) events: broadcast::Sender<GatewayEvent>,
     pub(crate) api_secret_token: String,
+    pub(crate) media_cache: MediaCache,
 }
 
 pub(crate) async fn initialize_gateway(config: &Config) -> anyhow::Result<AppState> {
     let store_path = session::matrix_store_path(&config.data_dir);
     let session_path = session::matrix_session_path(&config.data_dir);
+    let media_cache_path = session::media_cache_path(&config.data_dir);
     std::fs::create_dir_all(&store_path)?;
+    let media_cache = MediaCache::open(&media_cache_path)?;
 
     if !session_path.exists() && session::store_contains_data(&store_path)? {
         anyhow::bail!(
@@ -75,5 +81,6 @@ pub(crate) async fn initialize_gateway(config: &Config) -> anyhow::Result<AppSta
         client,
         events,
         api_secret_token: config.api_secret_token.clone(),
+        media_cache,
     })
 }
