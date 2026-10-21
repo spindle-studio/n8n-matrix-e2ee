@@ -26,6 +26,7 @@ use super::{
 };
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct MediaDownloadQuery {
     room_id: String,
     event_id: String,

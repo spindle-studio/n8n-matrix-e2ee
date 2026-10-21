@@ -17,7 +17,8 @@ use crate::gateway::AppState;
 pub(crate) use health::healthz;
 pub(crate) use messages::{
     GatewayEvent, gateway_message_type_label, reaction_content_to_gateway_event,
-    room_message_content_to_gateway_event,
+    room_member_event_to_gateway_event, room_message_content_to_gateway_event,
+    stripped_room_invite_to_gateway_event,
 };
 
 pub(crate) fn router() -> Router<AppState> {

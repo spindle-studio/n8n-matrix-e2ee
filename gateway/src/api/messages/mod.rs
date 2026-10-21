@@ -32,12 +32,12 @@ use crate::{
 };
 
 pub(crate) use event::{
-    GatewayEvent, gateway_message_type_label, reaction_content_to_gateway_event,
-    room_message_content_to_gateway_event,
+    GatewayEvent, GatewayRelationType, gateway_message_type_label,
+    reaction_content_to_gateway_event, room_member_event_to_gateway_event,
+    room_message_content_to_gateway_event, stripped_room_invite_to_gateway_event,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "rel_type", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RelatesTo {
     /// Matrix Threading (m.thread)
     Thread { event_id: String },
@@ -48,6 +48,22 @@ pub(crate) enum RelatesTo {
 }
 
 impl RelatesTo {
+    pub(crate) fn relation_type(&self) -> GatewayRelationType {
+        match self {
+            Self::Thread { .. } => GatewayRelationType::Thread,
+            Self::Reply { .. } => GatewayRelationType::Reply,
+            Self::Edit { .. } => GatewayRelationType::Edit,
+        }
+    }
+
+    pub(crate) fn target_event_id(&self) -> &str {
+        match self {
+            Self::Thread { event_id } | Self::Reply { event_id } | Self::Edit { event_id } => {
+                event_id
+            }
+        }
+    }
+
     pub(crate) fn to_matrix_json(&self) -> serde_json::Value {
         match self {
             Self::Thread { event_id } => {
@@ -81,27 +97,42 @@ impl RelatesTo {
         }
     }
 
-    fn validated(self) -> ApiResult<Self> {
-        match self {
-            Self::Thread { event_id } => Ok(Self::Thread {
-                event_id: parse_relates_to_event_id(&event_id)?.to_string(),
-            }),
-            Self::Reply { event_id } => Ok(Self::Reply {
-                event_id: parse_relates_to_event_id(&event_id)?.to_string(),
-            }),
-            Self::Edit { event_id } => Ok(Self::Edit {
-                event_id: parse_relates_to_event_id(&event_id)?.to_string(),
-            }),
-        }
+    fn from_flat_fields(
+        relation_type: GatewayRelationType,
+        target_event_id: &str,
+    ) -> ApiResult<Self> {
+        let event_id = parse_relates_to_event_id(target_event_id)?.to_string();
+        Ok(match relation_type {
+            GatewayRelationType::Thread => Self::Thread { event_id },
+            GatewayRelationType::Reply => Self::Reply { event_id },
+            GatewayRelationType::Edit => Self::Edit { event_id },
+        })
     }
 }
 
-pub(super) fn resolve_relates_to(request: Option<RelatesTo>) -> ApiResult<Option<RelatesTo>> {
-    request.map(RelatesTo::validated).transpose()
+pub(super) fn resolve_relates_to(
+    relation_type: Option<GatewayRelationType>,
+    target_event_id: Option<&str>,
+) -> ApiResult<Option<RelatesTo>> {
+    match (relation_type, target_event_id) {
+        (None, None) => Ok(None),
+        (Some(relation_type), Some(target_event_id)) => {
+            Ok(Some(RelatesTo::from_flat_fields(relation_type, target_event_id)?))
+        }
+        (Some(_), None) => Err(client_error(
+            "targetEventId is required when relationType is specified",
+        )),
+        (None, Some(_)) => Err(client_error(
+            "relationType is required when targetEventId is specified",
+        )),
+    }
 }
 
-pub(super) fn resolve_media_relates_to(request: Option<RelatesTo>) -> ApiResult<Option<RelatesTo>> {
-    let relates_to = resolve_relates_to(request)?;
+pub(super) fn resolve_media_relates_to(
+    relation_type: Option<GatewayRelationType>,
+    target_event_id: Option<&str>,
+) -> ApiResult<Option<RelatesTo>> {
+    let relates_to = resolve_relates_to(relation_type, target_event_id)?;
     if matches!(relates_to, Some(RelatesTo::Edit { .. })) {
         return Err(client_error(
             "edit relationship is only supported for text, notice, and emote messages",
@@ -113,12 +144,12 @@ pub(super) fn resolve_media_relates_to(request: Option<RelatesTo>) -> ApiResult<
 fn parse_relates_to_event_id(event_id: &str) -> ApiResult<OwnedEventId> {
     let trimmed = event_id.trim();
     if trimmed.is_empty() {
-        return Err(client_error("relates_to.event_id must not be empty"));
+        return Err(client_error("targetEventId must not be empty"));
     }
 
     trimmed
         .parse()
-        .map_err(|_| client_error("relates_to.event_id must be a valid Matrix event ID"))
+        .map_err(|_| client_error("targetEventId must be a valid Matrix event ID"))
 }
 
 pub(super) fn inject_relates_to_value(
@@ -173,6 +204,7 @@ pub(super) async fn upload_room_media(
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct MentionsRequest {
     #[serde(default)]
     pub(super) user_ids: Option<Vec<String>>,
@@ -207,15 +239,16 @@ pub(super) fn resolve_mentions(request: Option<MentionsRequest>) -> ApiResult<Me
 fn parse_user_id(user_id: &str) -> ApiResult<OwnedUserId> {
     let trimmed = user_id.trim();
     if trimmed.is_empty() {
-        return Err(client_error("mentions.user_ids entries must not be empty"));
+        return Err(client_error("mentions.userIds entries must not be empty"));
     }
 
     trimmed
         .parse()
-        .map_err(|_| client_error("mentions.user_ids entries must be valid Matrix user IDs"))
+        .map_err(|_| client_error("mentions.userIds entries must be valid Matrix user IDs"))
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct SendMediaMetadata {
     pub(super) room_id: String,
     #[serde(default)]
@@ -225,7 +258,9 @@ pub(super) struct SendMediaMetadata {
     #[serde(default)]
     pub(super) mentions: Option<MentionsRequest>,
     #[serde(default)]
-    pub(super) relates_to: Option<RelatesTo>,
+    pub(super) relation_type: Option<GatewayRelationType>,
+    #[serde(default)]
+    pub(super) target_event_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -300,6 +335,7 @@ pub(super) async fn extract_multipart_media(
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct MessageActionResponse {
     room_id: String,
     event_id: String,
@@ -387,7 +423,7 @@ mod tests {
             "--{boundary}\r\n\
              Content-Disposition: form-data; name=\"metadata\"\r\n\
              Content-Type: application/json\r\n\r\n\
-             {{\"room_id\":\"!room:example.org\",\"file_name\":\"photo.png\",\"body\":\"Caption\",\"mentions\":{{\"user_ids\":[\"@alice:example.org\"],\"room\":true}}}}\r\n\
+             {{\"roomId\":\"!room:example.org\",\"fileName\":\"photo.png\",\"body\":\"Caption\",\"mentions\":{{\"userIds\":[\"@alice:example.org\"],\"room\":true}}}}\r\n\
              --{boundary}\r\n\
              Content-Disposition: form-data; name=\"media\"; filename=\"fallback.png\"\r\n\
              Content-Type: image/png\r\n\r\n\
@@ -432,7 +468,7 @@ mod tests {
         let body = format!(
             "--{boundary}\r\n\
              Content-Disposition: form-data; name=\"metadata\"\r\n\r\n\
-             {{\"room_id\":\"!room:example.org\"}}\r\n\
+             {{\"roomId\":\"!room:example.org\"}}\r\n\
              --{boundary}--\r\n"
         );
         let req = Request::builder()
@@ -448,9 +484,10 @@ mod tests {
 
     #[test]
     fn relates_to_validates_trims_and_converts_to_matrix_json() {
-        let thread = resolve_relates_to(Some(RelatesTo::Thread {
-            event_id: " $root:example.org ".to_owned(),
-        }))
+        let thread = resolve_relates_to(
+            Some(GatewayRelationType::Thread),
+            Some(" $root:example.org "),
+        )
         .unwrap()
         .unwrap();
         assert_eq!(
@@ -472,9 +509,10 @@ mod tests {
             })
         );
 
-        let reply = resolve_relates_to(Some(RelatesTo::Reply {
-            event_id: "$reply:example.org".to_owned(),
-        }))
+        let reply = resolve_relates_to(
+            Some(GatewayRelationType::Reply),
+            Some("$reply:example.org"),
+        )
         .unwrap()
         .unwrap();
         assert_eq!(
@@ -488,9 +526,10 @@ mod tests {
             })
         );
 
-        let edit = resolve_relates_to(Some(RelatesTo::Edit {
-            event_id: "$edit:example.org".to_owned(),
-        }))
+        let edit = resolve_relates_to(
+            Some(GatewayRelationType::Edit),
+            Some("$edit:example.org"),
+        )
         .unwrap()
         .unwrap();
         assert_eq!(
@@ -506,29 +545,19 @@ mod tests {
 
     #[test]
     fn relates_to_rejects_empty_invalid_and_media_edit_relationships() {
+        assert!(resolve_relates_to(Some(GatewayRelationType::Thread), Some("   ")).is_err());
         assert!(
-            resolve_relates_to(Some(RelatesTo::Thread {
-                event_id: "   ".to_owned(),
-            }))
-            .is_err()
+            resolve_relates_to(Some(GatewayRelationType::Reply), Some("not-an-event-id")).is_err()
+        );
+        assert!(resolve_relates_to(Some(GatewayRelationType::Thread), None).is_err());
+        assert!(resolve_relates_to(None, Some("$root:example.org")).is_err());
+        assert!(
+            resolve_media_relates_to(Some(GatewayRelationType::Edit), Some("$edit:example.org"))
+                .is_err()
         );
         assert!(
-            resolve_relates_to(Some(RelatesTo::Reply {
-                event_id: "not-an-event-id".to_owned(),
-            }))
-            .is_err()
-        );
-        assert!(
-            resolve_media_relates_to(Some(RelatesTo::Edit {
-                event_id: "$edit:example.org".to_owned(),
-            }))
-            .is_err()
-        );
-        assert!(
-            resolve_media_relates_to(Some(RelatesTo::Thread {
-                event_id: "$root:example.org".to_owned(),
-            }))
-            .is_ok()
+            resolve_media_relates_to(Some(GatewayRelationType::Thread), Some("$root:example.org"))
+                .is_ok()
         );
     }
 }

@@ -37,16 +37,19 @@ pub(crate) fn router() -> Router<AppState> {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct JoinRoomRequest {
     room_id: String,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct RoomIdResponse {
     room_id: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct LeaveRoomApiRequest {
     room_id: String,
     #[serde(default)]
@@ -54,11 +57,13 @@ pub(super) struct LeaveRoomApiRequest {
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct LeaveRoomResponse {
     success: bool,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct InviteRoomApiRequest {
     room_id: String,
     user_ids: Vec<String>,
@@ -67,6 +72,7 @@ pub(super) struct InviteRoomApiRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct CreateRoomApiRequest {
     name: String,
     #[serde(default = "default_visibility")]
@@ -92,22 +98,22 @@ fn default_is_encrypted() -> bool {
 pub(crate) fn parse_room_or_alias_id(room_id: &str) -> ApiResult<OwnedRoomOrAliasId> {
     let trimmed = room_id.trim();
     if trimmed.is_empty() {
-        return Err(client_error("room_id must not be empty"));
+        return Err(client_error("roomId must not be empty"));
     }
 
     trimmed
         .parse()
-        .map_err(|_| client_error("room_id must be a valid Matrix room ID or alias"))
+        .map_err(|_| client_error("roomId must be a valid Matrix room ID or alias"))
 }
 
 pub(crate) fn parse_event_id(event_id: &str) -> ApiResult<OwnedEventId> {
     if event_id.trim().is_empty() {
-        return Err(client_error("event_id must not be empty"));
+        return Err(client_error("eventId must not be empty"));
     }
 
     event_id
         .parse()
-        .map_err(|_| client_error("event_id must be a valid Matrix event ID"))
+        .map_err(|_| client_error("eventId must be a valid Matrix event ID"))
 }
 
 pub(crate) async fn resolve_known_room(client: &Client, room_id_or_alias: &str) -> ApiResult<Room> {
@@ -116,7 +122,7 @@ pub(crate) async fn resolve_known_room(client: &Client, room_id_or_alias: &str) 
         Ok(room_id) => room_id,
         Err(_) => {
             let alias = OwnedRoomAliasId::try_from(parsed)
-                .map_err(|_| client_error("room_id must be a valid Matrix room ID or alias"))?;
+                .map_err(|_| client_error("roomId must be a valid Matrix room ID or alias"))?;
             if let Some(room) = client.rooms().into_iter().find(|room| {
                 room.canonical_alias().as_ref() == Some(&alias)
                     || room.alt_aliases().contains(&alias)
@@ -154,16 +160,16 @@ fn build_invite_room_requests(
     for raw_user_id in raw_user_ids {
         let trimmed = raw_user_id.trim();
         if trimmed.is_empty() {
-            return Err(client_error("user_ids entries must not be empty"));
+            return Err(client_error("userIds entries must not be empty"));
         }
         let user_id: OwnedUserId = trimmed
             .parse()
-            .map_err(|_| client_error("user_ids entries must be valid Matrix user IDs"))?;
+            .map_err(|_| client_error("userIds entries must be valid Matrix user IDs"))?;
         user_ids.insert(user_id);
     }
 
     if user_ids.is_empty() {
-        return Err(client_error("user_ids must not be empty"));
+        return Err(client_error("userIds must not be empty"));
     }
 
     let normalized_reason = normalize_optional_reason(reason);
@@ -204,7 +210,7 @@ fn build_create_room_request(request: CreateRoomApiRequest) -> ApiResult<CreateR
         Some(alias) => {
             if alias.starts_with('#') || alias.contains(':') || alias.chars().any(char::is_whitespace) {
                 return Err(client_error(
-                    "room_alias_name must be a valid alias localpart without '#' or ':server'",
+                    "roomAliasName must be a valid alias localpart without '#' or ':server'",
                 ));
             }
             Some(alias)
@@ -504,7 +510,7 @@ mod tests {
                 room_id: "!room:example.org".to_owned()
             })
             .unwrap(),
-            serde_json::json!({"room_id": "!room:example.org"})
+            serde_json::json!({"roomId": "!room:example.org"})
         );
         assert_eq!(
             serde_json::to_value(LeaveRoomResponse { success: true }).unwrap(),

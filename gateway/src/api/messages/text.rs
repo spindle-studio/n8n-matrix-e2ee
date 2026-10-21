@@ -7,9 +7,9 @@ use tracing::{error, info};
 use crate::gateway::AppState;
 
 use super::{
-    MentionsRequest, MessageActionResponse, RelatesTo, event::GatewayMessageType,
-    inject_relates_to_value, into_raw_room_message_content, message_action_response,
-    resolve_mentions, resolve_relates_to,
+    GatewayRelationType, MentionsRequest, MessageActionResponse, RelatesTo,
+    event::GatewayMessageType, inject_relates_to_value, into_raw_room_message_content,
+    message_action_response, resolve_mentions, resolve_relates_to,
 };
 use crate::api::{
     auth::authorize_request,
@@ -18,13 +18,16 @@ use crate::api::{
 };
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct SendMarkdownRequest {
     room_id: String,
     body: String,
     #[serde(default)]
     mentions: Option<MentionsRequest>,
     #[serde(default)]
-    relates_to: Option<RelatesTo>,
+    relation_type: Option<GatewayRelationType>,
+    #[serde(default)]
+    target_event_id: Option<String>,
 }
 
 pub(super) async fn send_text(
@@ -43,7 +46,8 @@ pub(super) async fn send_markdown_message(
 ) -> ApiResult<Json<MessageActionResponse>> {
     authorize_request(&state.api_secret_token, &headers)?;
     let mentions = resolve_mentions(request.mentions)?;
-    let relates_to = resolve_relates_to(request.relates_to)?;
+    let relates_to =
+        resolve_relates_to(request.relation_type, request.target_event_id.as_deref())?;
     let payload = build_markdown_message_payload(
         &request.body,
         gateway_message_type,
