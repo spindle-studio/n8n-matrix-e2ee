@@ -23,22 +23,15 @@ Test and save the credentials.
 
 ## Use the nodes
 
-**Matrix E2EE Trigger** starts a workflow when a text, notice, emote, image, or audio message, reaction, or room invitation (`room.invite`)
-arrives. To try it, add the trigger, select your credentials, click
-**Listen for test event**, and send a new message or room invite to the bot. Events received
-before the trigger connects aren't replayed, and the bot's own events are ignored.
+- **Matrix E2EE Trigger:** start a workflow on new messages (text, notices, emotes, images, and voice), reactions, or room membership events (invites, joins, and leaves). Enable **Download Media** to attach received images or audio as binary data for later steps.
+- **Matrix E2EE (Message):** send text, notices, emotes, images, and voice messages, reply or post in threads, edit or delete messages, react to messages, or set a typing indicator.
+- **Matrix E2EE (Room):** create rooms, join rooms by ID or alias, invite users, or leave rooms.
 
-Enable **Download Media** to pass received media to later nodes as binary data.
-Choose its output field with **Output Data Field Name**.
-
-**Matrix E2EE** supports two resources:
-
-- **Message:** send text, notices, emotes, images, and Ogg/Opus audio, edit or delete messages, send reactions, or set a typing indicator.
-- **Room:** create a room, invite users to a room, join a room by ID or alias, or leave a room.
+To test the trigger, add **Matrix E2EE Trigger** to a workflow, select your credentials, click **Listen for test event**, and send a message in a room the Matrix account has joined. Events from before the trigger started listening aren't replayed, and events sent by the connected account itself are ignored.
 
 ## Requirements
 
-- Gateway **0.2.0 or later** supporting the same API.
+- Gateway **0.4.0 or later** supporting the same API.
 - A current self-hosted n8n release with **Node.js 22.4 or later**.
 
 This package has not been verified for n8n Cloud. Check the
