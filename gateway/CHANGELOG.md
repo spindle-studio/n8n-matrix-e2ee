@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/spindle-studio/n8n-matrix-e2ee/compare/gateway-v0.5.0...gateway-v0.6.0) (2026-10-22)
+
+
+### Features
+
+* **gateway:** add endpoint to reset account cross-signing identity ([#28](https://github.com/spindle-studio/n8n-matrix-e2ee/issues/28)) ([10dc332](https://github.com/spindle-studio/n8n-matrix-e2ee/commit/10dc332e58fe192c9e7c8a735100199bb7e48e00))
+
 ## [0.5.0](https://github.com/spindle-studio/n8n-matrix-e2ee/compare/gateway-v0.4.0...gateway-v0.5.0) (2026-10-21)
 
 
