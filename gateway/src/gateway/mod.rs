@@ -21,6 +21,7 @@ pub(crate) struct AccountState {
     pub(crate) account_id: String,
     pub(crate) client: Client,
     pub(crate) events: broadcast::Sender<GatewayEvent>,
+    pub(crate) matrix_password: String,
     pub(crate) api_secret_token: String,
     pub(crate) media_cache: MediaCache,
 }
@@ -146,6 +147,7 @@ async fn initialize_account(
         account_id: account.id.clone(),
         client,
         events,
+        matrix_password: account.matrix_password.clone(),
         api_secret_token: account.api_secret_token.clone(),
         media_cache,
     })

@@ -90,7 +90,9 @@ client reports the device as unverified, inspect gateway startup logs:
 1. Check `has_cross_signing_identity` and `is_device_verified`.
 2. If no cross-signing identity exists, investigate the homeserver response.
 3. If an identity exists but the device is not verified, verify it once from a
-   Matrix client or import the applicable secrets.
+   Matrix client, import the applicable secrets, or call
+   `POST /v1/account/reset-cross-signing` with the account's bearer token to
+   replace a lost cross-signing identity and sign the gateway device.
 4. Do not delete the data volume after the device is trusted.
 
 Older gateway volumes without a recoverable session token must be replaced once;
@@ -106,6 +108,7 @@ The API is intentionally private: expose it only to trusted n8n workloads.
 | --- | --- |
 | `GET /healthz` | Returns `200` after initialization |
 | `GET /v1/auth-check` | Returns `204` for a valid bearer token |
+| `POST /v1/account/reset-cross-signing` | Resets the authenticated account's Matrix cross-signing identity using its configured `matrix_password` and returns `{"userId":"...","deviceId":"...","verificationState":"...","isDeviceVerified":true,"hasCrossSigningIdentity":true,"crossSigningIdentityVerified":true}` |
 | `POST /v1/messages/text` | Sends `{"roomId":"...","body":"...","mentions":{...},"relationType":"...","targetEventId":"$..."}` as `m.text` (converts Markdown to plain-text `body` and HTML `formatted_body`; `mentions`, `relationType`, and `targetEventId` optional) |
 | `POST /v1/messages/notice` | Sends `{"roomId":"...","body":"...","mentions":{...},"relationType":"...","targetEventId":"$..."}` as `m.notice` (converts Markdown to plain-text `body` and HTML `formatted_body` without triggering notifications; `mentions`, `relationType`, and `targetEventId` optional) |
 | `POST /v1/messages/emote` | Sends `{"roomId":"...","body":"...","mentions":{...},"relationType":"...","targetEventId":"$..."}` as `m.emote` (converts Markdown to plain-text `body` and HTML `formatted_body`; `mentions`, `relationType`, and `targetEventId` optional) |

@@ -1,3 +1,4 @@
+mod account;
 mod auth;
 mod error;
 mod health;
@@ -24,6 +25,7 @@ pub(crate) use messages::{
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/auth-check", get(auth::auth_check))
+        .nest("/account", account::router())
         .nest("/messages", messages::router())
         .nest("/room", room::router())
         .route("/typing", post(typing::set_typing))
